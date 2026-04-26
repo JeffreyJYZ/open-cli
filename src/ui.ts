@@ -12,7 +12,7 @@ export function renderBanner(): string {
 	return [
 		chalk.cyanBright("╭──────────────────────────────────────────────╮"),
 		chalk.cyanBright("│") +
-			chalk.whiteBright(" open ") +
+			chalk.whiteBright(" open-cli ") +
 			chalk.dim("cross-platform folder launcher") +
 			chalk.cyanBright(" │"),
 		chalk.cyanBright("╰──────────────────────────────────────────────╯"),
@@ -78,13 +78,16 @@ export function renderHelp(): string {
 		renderBanner(),
 		"",
 		chalk.whiteBright("Usage"),
+		"  o -v | --version       Show the installed CLI version",
 		"  o <ref>                 Open a saved folder with the default opener",
 		"  o open [ref]            Open a folder by reference or pick one interactively",
 		"  o add <ref> <path>      Save an absolute folder path",
 		"  o rm <id|ref>           Remove a saved folder",
 		"  o rename <id|ref> <ref> Rename a saved reference",
 		"  o ls                    List saved folders",
-		"  o config                Manage openers, paths, and update settings",
+		"  o config                Open the interactive config menu",
+		"  o config show           Show current config and openers",
+		"  o config set ...        Change config directly from the command line",
 		"  o doctor                Validate config, storage, openers, and saved paths",
 		"  o update                Clone the latest repo snapshot and rebuild this CLI",
 		"  o setup                 Run first-time setup",
@@ -92,11 +95,11 @@ export function renderHelp(): string {
 		"",
 		chalk.whiteBright("Interactive shortcuts"),
 		"  o                       Open the folder picker",
-		"  pnpm manage             Open the full management dashboard",
 		"",
 		chalk.whiteBright("Notes"),
-		"  - Setup stores CONFIG_PATH in .env as an absolute path.",
+		"  - Setup stores CONFIG_PATH in .env as an absolute path to storage.json.",
 		"  - Dangerous actions always ask for confirmation.",
+		"  - Direct config fields: default-opener, storage-dir, indent, update-repo, update-branch, update-source.",
 		"  - Openers can use {path} and {ref} placeholders.",
 	].join("\n");
 }
@@ -105,8 +108,7 @@ export function renderConfigSummary(config: AppConfig): string {
 	return [
 		chalk.whiteBright("Config"),
 		`  storage dir   ${config.storageDir}`,
-		`  config file   ${config.configPath}`,
-		`  locations     ${config.storagePath}`,
+		`  storage file  ${config.storagePath}`,
 		`  indent        ${config.storageIndent}`,
 		`  default       ${config.openers.find((opener) => opener.id === config.defaultOpenerId)?.label ?? "unknown"}`,
 		`  update        ${config.update.repositoryUrl || "not configured"}`,

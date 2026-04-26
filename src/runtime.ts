@@ -6,8 +6,10 @@ import path from "node:path";
 import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import {
 	type AppConfig,
+	DEFAULT_UPDATE_REPOSITORY,
 	type LocationRecord,
 	type OpenerConfig,
+	type UpdateCheckState,
 	absolutePathSchema,
 	getPlatformLabel,
 	getPlatformOpenerPresets,
@@ -20,7 +22,6 @@ import {
 	createLocationRecord,
 	createOpenerRecord,
 	detectRepositoryInfo,
-	getNextId,
 	getProjectRoot,
 	getDefaultStorageDir,
 	loadState,
@@ -28,8 +29,7 @@ import {
 	initializeRuntime,
 	moveStorageDirectory,
 	normalizeUserPath,
-	saveConfig,
-	saveLocations,
+	saveState,
 	slugifyKey,
 	writeConfigPathEnv,
 } from "./state";
@@ -62,6 +62,295 @@ function applyCommandTemplate(
 	return template
 		.replaceAll("{path}", quoteForShell(location.path))
 		.replaceAll("{ref}", quoteForShell(location.ref));
+}
+
+const GITHUB_REPOSITORY_SHORTHAND_PATTERN =
+	/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 24;
+
+function resolveRepositoryCloneSource(repositoryUrl: string): string {
+	const trimmed = repositoryUrl.trim();
+	if (
+		trimmed === "" ||
+		trimmed.startsWith("git@") ||
+		trimmed.includes("://") ||
+		trimmed.startsWith("/") ||
+		trimmed.startsWith(".") ||
+		trimmed.startsWith("~")
+	) {
+		return trimmed;
+	}
+
+	return GITHUB_REPOSITORY_SHORTHAND_PATTERN.test(trimmed)
+		? `https://github.com/${trimmed}.git`
+		: trimmed;
+}
+
+function parseGitHubRepository(repositoryUrl: string): {
+	owner: string;
+	repository: string;
+} | null {
+	const trimmed = repositoryUrl.trim().replace(/\.git$/u, "");
+	if (GITHUB_REPOSITORY_SHORTHAND_PATTERN.test(trimmed)) {
+		const [owner, repository] = trimmed.split("/");
+		return { owner, repository };
+	}
+
+	if (trimmed.startsWith("git@github.com:")) {
+		const slug = trimmed.slice("git@github.com:".length);
+		const [owner, repository] = slug.split("/");
+		return owner && repository ? { owner, repository } : null;
+	}
+
+	if (trimmed.startsWith("https://github.com/")) {
+		const pathname = new URL(trimmed).pathname.replace(/^\//u, "");
+		const [owner, repository] = pathname.split("/");
+		return owner && repository ? { owner, repository } : null;
+	}
+
+	return null;
+}
+
+function compareVersions(
+	currentVersion: string,
+	nextVersion: string,
+): number | null {
+	const parse = (value: string) => {
+		const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u);
+		if (!match) {
+			return null;
+		}
+
+		return match.slice(1).map((segment) => Number.parseInt(segment, 10));
+	};
+
+	const current = parse(currentVersion);
+	const next = parse(nextVersion);
+	if (!current || !next) {
+		return null;
+	}
+
+	for (let index = 0; index < current.length; index += 1) {
+		if (current[index] === next[index]) {
+			continue;
+		}
+		return current[index] < next[index] ? -1 : 1;
+	}
+
+	return 0;
+}
+
+function readRemoteBranchRevision(
+	repositoryUrl: string,
+	branch: string,
+): string {
+	const cloneSource = resolveRepositoryCloneSource(repositoryUrl);
+	if (!cloneSource) {
+		return "";
+	}
+
+	const result = spawnSync(
+		"git",
+		["ls-remote", cloneSource, `refs/heads/${branch}`],
+		{
+			encoding: "utf8",
+			timeout: 4000,
+		},
+	);
+	if (result.status !== 0) {
+		return "";
+	}
+
+	const [revision] = result.stdout.trim().split(/\s+/u);
+	return revision ?? "";
+}
+
+async function readCurrentPackageVersion(rootDir: string): Promise<string> {
+	const raw = await fs.readFile(path.join(rootDir, "package.json"), "utf8");
+	const parsed = JSON.parse(raw) as { version?: unknown };
+	return typeof parsed.version === "string" ? parsed.version : "";
+}
+
+async function printVersion(rootDir = getProjectRoot()): Promise<void> {
+	const version = await readCurrentPackageVersion(rootDir);
+	console.log(version || "unknown");
+}
+
+async function readRemotePackageVersion(
+	repositoryUrl: string,
+	branch: string,
+): Promise<string> {
+	const githubRepository = parseGitHubRepository(repositoryUrl);
+	if (!githubRepository) {
+		return "";
+	}
+
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 4000);
+	try {
+		const response = await fetch(
+			`https://raw.githubusercontent.com/${githubRepository.owner}/${githubRepository.repository}/${encodeURIComponent(branch)}/package.json`,
+			{ signal: controller.signal },
+		);
+		if (!response.ok) {
+			return "";
+		}
+
+		const parsed = (await response.json()) as { version?: unknown };
+		return typeof parsed.version === "string" ? parsed.version : "";
+	} catch {
+		return "";
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+function shouldRefreshUpdateCheck(lastCheckedAt: string): boolean {
+	if (!lastCheckedAt) {
+		return true;
+	}
+
+	const lastCheckedAtMs = Date.parse(lastCheckedAt);
+	if (Number.isNaN(lastCheckedAtMs)) {
+		return true;
+	}
+
+	return Date.now() - lastCheckedAtMs >= UPDATE_CHECK_INTERVAL_MS;
+}
+
+function formatUpdateNotification(
+	currentVersion: string,
+	check: UpdateCheckState,
+): string | null {
+	const versionComparison =
+		currentVersion && check.latestVersion
+			? compareVersions(currentVersion, check.latestVersion)
+			: null;
+	if (versionComparison === -1) {
+		return `open-cli ${check.latestVersion} is available (installed ${currentVersion}). Run \`o update\`.`;
+	}
+
+	if (
+		check.installedRevision &&
+		check.latestRevision &&
+		check.installedRevision !== check.latestRevision
+	) {
+		return "A newer open-cli build is available. Run `o update`.";
+	}
+
+	return null;
+}
+
+async function maybeNotifyIfUpdateAvailable(
+	state: LoadedState,
+): Promise<LoadedState> {
+	const currentVersion = await readCurrentPackageVersion(state.rootDir);
+	const installedRevision =
+		state.config.update.check.installedRevision ||
+		detectRepositoryInfo(state.rootDir).revision;
+	let nextState = state;
+
+	if (shouldRefreshUpdateCheck(state.config.update.check.lastCheckedAt)) {
+		const latestRevision = readRemoteBranchRevision(
+			state.config.update.repositoryUrl,
+			state.config.update.branch,
+		);
+		const latestVersion = await readRemotePackageVersion(
+			state.config.update.repositoryUrl,
+			state.config.update.branch,
+		);
+		const nextCheck = {
+			...state.config.update.check,
+			installedRevision,
+			lastCheckedAt: new Date().toISOString(),
+			latestVersion,
+			latestRevision,
+		};
+
+		if (
+			nextCheck.lastCheckedAt !==
+				state.config.update.check.lastCheckedAt ||
+			nextCheck.latestVersion !==
+				state.config.update.check.latestVersion ||
+			nextCheck.latestRevision !==
+				state.config.update.check.latestRevision
+		) {
+			nextState = await saveState({
+				...state,
+				config: {
+					...state.config,
+					update: {
+						...state.config.update,
+						check: nextCheck,
+					},
+				},
+			});
+		}
+	} else if (
+		installedRevision !== state.config.update.check.installedRevision
+	) {
+		nextState = await saveState({
+			...state,
+			config: {
+				...state.config,
+				update: {
+					...state.config.update,
+					check: {
+						...state.config.update.check,
+						installedRevision,
+					},
+				},
+			},
+		});
+	}
+
+	const notification = formatUpdateNotification(
+		currentVersion,
+		nextState.config.update.check,
+	);
+	if (notification) {
+		warn(notification);
+	}
+
+	return nextState;
+}
+
+function printConfigState(state: LoadedState): void {
+	console.log(renderBanner());
+	console.log(renderConfigSummary(state.config));
+	console.log(
+		renderOpenerList(state.config.openers, state.config.defaultOpenerId),
+	);
+}
+
+function parseStorageIndent(value: string): number {
+	const storageIndent = Number.parseInt(value, 10);
+	if (
+		!Number.isInteger(storageIndent) ||
+		storageIndent < 2 ||
+		storageIndent > 8
+	) {
+		throw new Error("Indent must be a whole number between 2 and 8");
+	}
+	return storageIndent;
+}
+
+function validateStorageIndent(value: string): true | string {
+	try {
+		parseStorageIndent(value);
+		return true;
+	} catch (error) {
+		return error instanceof Error ? error.message : "Invalid indent";
+	}
+}
+
+function resetUpdateCheck(check: UpdateCheckState): UpdateCheckState {
+	return {
+		...check,
+		lastCheckedAt: "",
+		latestVersion: "",
+		latestRevision: "",
+	};
 }
 
 async function runProcess(
@@ -172,12 +461,12 @@ function parseWithOption(args: string[]): {
 	return { args: plainArgs, openerTarget };
 }
 
-async function requireState(): Promise<LoadedState> {
+async function requireState(notifyAboutUpdates = true): Promise<LoadedState> {
 	const state = await loadState({ allowFallbackToCwd: true });
 	if (state) {
-		return state;
+		return notifyAboutUpdates ? maybeNotifyIfUpdateAvailable(state) : state;
 	}
-	throw new Error("No config found yet. Run `o setup` first.");
+	throw new Error("No storage file found yet. Run `o setup` first.");
 }
 
 async function promptForLocation(
@@ -459,7 +748,10 @@ async function addLocationFlow(
 	const locations = [...existing, location].sort((left, right) =>
 		left.ref.localeCompare(right.ref),
 	);
-	await saveLocations(state.config, locations);
+	await saveState({
+		...state,
+		locations,
+	});
 	success(`Saved ${location.ref}`);
 	return {
 		...state,
@@ -492,7 +784,10 @@ async function removeLocationFlow(
 	}
 
 	const locations = state.locations.filter((item) => item.id !== location.id);
-	await saveLocations(state.config, locations);
+	await saveState({
+		...state,
+		locations,
+	});
 	success(`Removed ${location.ref}`);
 	return {
 		...state,
@@ -547,7 +842,10 @@ async function renameLocationFlow(
 			? locationSchema.parse({ ...item, ref: nextRef })
 			: item,
 	);
-	await saveLocations(state.config, locations);
+	await saveState({
+		...state,
+		locations,
+	});
 	success(`Renamed ${location.ref} to ${nextRef}`);
 	return {
 		...state,
@@ -570,7 +868,10 @@ async function clearLocationsFlow(state: LoadedState): Promise<LoadedState> {
 		return state;
 	}
 
-	await saveLocations(state.config, []);
+	await saveState({
+		...state,
+		locations: [],
+	});
 	success("Removed every saved folder.");
 	return {
 		...state,
@@ -608,15 +909,16 @@ async function runDoctorFlow(state: LoadedState): Promise<LoadedState> {
 	console.log(renderConfigSummary(state.config));
 
 	const issues: string[] = [];
-	if (process.env.CONFIG_PATH?.trim() !== state.config.configPath) {
-		issues.push("CONFIG_PATH does not match the active config file.");
+	if (process.env.CONFIG_PATH?.trim() !== state.config.storagePath) {
+		issues.push("CONFIG_PATH does not match the active storage file.");
 		const fixEnv = await confirm({
-			message: "Update .env so CONFIG_PATH matches the current config?",
+			message:
+				"Update .env so CONFIG_PATH matches the current storage file?",
 			default: true,
 		});
 		if (fixEnv) {
-			await writeConfigPathEnv(state.config.configPath, state.rootDir);
-			process.env.CONFIG_PATH = state.config.configPath;
+			await writeConfigPathEnv(state.config.storagePath, state.rootDir);
+			process.env.CONFIG_PATH = state.config.storagePath;
 			success("Updated .env.");
 		}
 	}
@@ -644,7 +946,10 @@ async function runDoctorFlow(state: LoadedState): Promise<LoadedState> {
 			const locations = state.locations.filter(
 				(location) => !deleteIds.includes(location.id),
 			);
-			await saveLocations(state.config, locations);
+			await saveState({
+				...state,
+				locations,
+			});
 			state = {
 				...state,
 				locations,
@@ -676,18 +981,185 @@ async function runDoctorFlow(state: LoadedState): Promise<LoadedState> {
 	return state;
 }
 
+async function saveDefaultOpener(
+	state: LoadedState,
+	opener: OpenerConfig,
+): Promise<LoadedState> {
+	return saveState({
+		...state,
+		config: {
+			...state.config,
+			defaultOpenerId: opener.id,
+		},
+	});
+}
+
+async function saveStorageIndent(
+	state: LoadedState,
+	storageIndent: number,
+): Promise<LoadedState> {
+	return saveState({
+		...state,
+		config: {
+			...state.config,
+			storageIndent,
+		},
+	});
+}
+
+async function saveUpdateSource(
+	state: LoadedState,
+	repositoryUrl: string,
+	branch: string,
+): Promise<LoadedState> {
+	return saveState({
+		...state,
+		config: {
+			...state.config,
+			update: {
+				repositoryUrl: repositoryUrl.trim(),
+				branch: branch.trim(),
+				check: resetUpdateCheck(state.config.update.check),
+			},
+		},
+	});
+}
+
+async function handleConfigCommand(
+	state: LoadedState,
+	args: string[],
+): Promise<LoadedState> {
+	const [subcommand, ...rest] = args;
+
+	if (!subcommand) {
+		return configMenuFlow(state);
+	}
+
+	if (subcommand === "show") {
+		printConfigState(state);
+		return state;
+	}
+
+	if (subcommand !== "set") {
+		throw new Error(
+			"Unknown config command. Use `o config`, `o config show`, or `o config set <field> <value>`.",
+		);
+	}
+
+	const [field, ...values] = rest;
+	if (!field) {
+		throw new Error(
+			"Usage: o config set <default-opener|storage-dir|indent|update-repo|update-branch|update-source> <value>",
+		);
+	}
+
+	if (field === "default-opener" || field === "default") {
+		const target = values[0];
+		if (!target) {
+			throw new Error(
+				"Usage: o config set default-opener <opener-id|opener-key>",
+			);
+		}
+		const opener = findOpener(target, state.config);
+		if (!opener) {
+			throw new Error(`Opener not found: ${target}`);
+		}
+		const nextState = await saveDefaultOpener(state, opener);
+		success(`Default opener set to ${opener.label}`);
+		return nextState;
+	}
+
+	if (field === "storage-dir") {
+		const nextDirInput = values[0];
+		if (!nextDirInput) {
+			throw new Error("Usage: o config set storage-dir <absolute-path>");
+		}
+		const nextDir = normalizeUserPath(nextDirInput);
+		absolutePathSchema.parse(nextDir);
+
+		if (nextDir === state.config.storageDir) {
+			info(`Storage already uses ${nextDir}`);
+			return state;
+		}
+
+		const approved = await confirm({
+			message: `Move storage.json to ${nextDir}? The old storage file will be removed.`,
+			default: false,
+		});
+		if (!approved) {
+			warn("Storage move cancelled.");
+			return state;
+		}
+
+		const nextState = await moveStorageDirectory(state, nextDir);
+		success(`Storage moved to ${nextState.config.storageDir}`);
+		return nextState;
+	}
+
+	if (field === "indent" || field === "storage-indent") {
+		const rawIndent = values[0];
+		if (!rawIndent) {
+			throw new Error("Usage: o config set indent <2-8>");
+		}
+		const storageIndent = parseStorageIndent(rawIndent);
+		const nextState = await saveStorageIndent(state, storageIndent);
+		success(`Indent updated to ${storageIndent}`);
+		return nextState;
+	}
+
+	if (field === "update-repo" || field === "repository") {
+		const repositoryUrl = values[0]?.trim();
+		if (!repositoryUrl) {
+			throw new Error(
+				"Usage: o config set update-repo <repository-url|owner/repo>",
+			);
+		}
+		const nextState = await saveUpdateSource(
+			state,
+			repositoryUrl,
+			state.config.update.branch,
+		);
+		success("Update repository saved.");
+		return nextState;
+	}
+
+	if (field === "update-branch" || field === "branch") {
+		const branch = values[0]?.trim();
+		if (!branch) {
+			throw new Error("Usage: o config set update-branch <branch>");
+		}
+		const nextState = await saveUpdateSource(
+			state,
+			state.config.update.repositoryUrl,
+			branch,
+		);
+		success("Update branch saved.");
+		return nextState;
+	}
+
+	if (field === "update-source") {
+		const repositoryUrl = values[0]?.trim();
+		const branch = values[1]?.trim();
+		if (!repositoryUrl || !branch) {
+			throw new Error(
+				"Usage: o config set update-source <repository-url|owner/repo> <branch>",
+			);
+		}
+		const nextState = await saveUpdateSource(state, repositoryUrl, branch);
+		success("Update source saved.");
+		return nextState;
+	}
+
+	throw new Error(
+		`Unknown config field: ${field}. Supported fields: default-opener, storage-dir, indent, update-repo, update-branch, update-source.`,
+	);
+}
+
 async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 	let current = state;
 
 	while (true) {
-		console.log(renderBanner());
-		console.log(renderConfigSummary(current.config));
-		console.log(
-			renderOpenerList(
-				current.config.openers,
-				current.config.defaultOpenerId,
-			),
-		);
+		printConfigState(current);
 
 		const action = await select<string>({
 			message: "Config",
@@ -711,13 +1183,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				current.config,
 				"Choose the default opener",
 			);
-			current = {
-				...current,
-				config: await saveConfig({
-					...current.config,
-					defaultOpenerId: opener.id,
-				}),
-			};
+			current = await saveDefaultOpener(current, opener);
 			success(`Default opener set to ${opener.label}`);
 			continue;
 		}
@@ -727,14 +1193,14 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				current.config.openers,
 				current.config.defaultOpenerId,
 			);
-			current = {
+			current = await saveState({
 				...current,
-				config: await saveConfig({
+				config: {
 					...current.config,
 					openers: next.openers,
 					defaultOpenerId: next.defaultOpenerId,
-				}),
-			};
+				},
+			});
 			success("Updated opener list.");
 			continue;
 		}
@@ -763,14 +1229,14 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				current.config.defaultOpenerId === opener.id
 					? openers[0].id
 					: current.config.defaultOpenerId;
-			current = {
+			current = await saveState({
 				...current,
-				config: await saveConfig({
+				config: {
 					...current.config,
 					openers,
 					defaultOpenerId,
-				}),
-			};
+				},
+			});
 			success(`Removed ${opener.label}`);
 			continue;
 		}
@@ -778,7 +1244,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 		if (action === "move-storage") {
 			const approved = await confirm({
 				message:
-					"Move config.json and locs.json to a new directory? Existing files in the old directory will be removed.",
+					"Move storage.json to a new directory? The old storage file will be removed.",
 				default: false,
 			});
 			if (!approved) {
@@ -790,10 +1256,8 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				default: current.config.storageDir,
 			});
 			current = await moveStorageDirectory(
-				current.config,
-				current.locations,
+				current,
 				normalizeUserPath(nextDirInput),
-				current.rootDir,
 			);
 			success(`Storage moved to ${current.config.storageDir}`);
 			continue;
@@ -803,30 +1267,21 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 			const indentInput = await input({
 				message: "JSON indentation",
 				default: String(current.config.storageIndent),
-				validate: (value) => {
-					const parsed = Number.parseInt(value, 10);
-					return parsed >= 2 && parsed <= 8
-						? true
-						: "Indent must be a whole number between 2 and 8";
-				},
+				validate: validateStorageIndent,
 			});
-			const storageIndent = Number.parseInt(indentInput, 10);
-			current = {
-				...current,
-				config: await saveConfig({
-					...current.config,
-					storageIndent,
-				}),
-			};
-			await saveLocations(current.config, current.locations);
+			const storageIndent = parseStorageIndent(indentInput);
+			current = await saveStorageIndent(current, storageIndent);
 			success(`Indent updated to ${storageIndent}`);
 			continue;
 		}
 
 		if (action === "update-source") {
 			const repositoryUrl = await input({
-				message: "Repository URL used by `o update`",
-				default: current.config.update.repositoryUrl,
+				message:
+					"Repository URL or GitHub owner/repo used by `o update`",
+				default:
+					current.config.update.repositoryUrl ||
+					DEFAULT_UPDATE_REPOSITORY,
 			});
 			const branch = await input({
 				message: "Branch",
@@ -834,16 +1289,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				validate: (value) =>
 					value.trim().length > 0 || "Branch is required",
 			});
-			current = {
-				...current,
-				config: await saveConfig({
-					...current.config,
-					update: {
-						repositoryUrl: repositoryUrl.trim(),
-						branch: branch.trim(),
-					},
-				}),
-			};
+			current = await saveUpdateSource(current, repositoryUrl, branch);
 			success("Update source saved.");
 		}
 	}
@@ -864,11 +1310,11 @@ async function setupFlow(force = false): Promise<LoadedState> {
 
 	console.log(renderBanner());
 	info(
-		"Setup will create config.json, locs.json, and .env so the CLI is ready to use.",
+		"Setup will create storage.json and .env so open-cli is ready to use.",
 	);
 
 	const storageDirInput = await input({
-		message: "Directory that should contain config.json and locs.json",
+		message: "Directory that should contain storage.json",
 		default: getDefaultStorageDir(),
 	});
 	const storageDir = normalizeUserPath(storageDirInput);
@@ -884,8 +1330,8 @@ async function setupFlow(force = false): Promise<LoadedState> {
 		: undefined;
 	const detectedRepository = detectRepositoryInfo(getProjectRoot());
 	const repositoryUrl = await input({
-		message: "Repository URL for `o update`",
-		default: detectedRepository.repositoryUrl,
+		message: "Repository URL or GitHub owner/repo for `o update`",
+		default: DEFAULT_UPDATE_REPOSITORY,
 	});
 	const branch = await input({
 		message: "Branch to pull during updates",
@@ -903,7 +1349,7 @@ async function setupFlow(force = false): Promise<LoadedState> {
 		initialLocation,
 	});
 
-	success(`Setup complete. Active config: ${state.config.configPath}`);
+	success(`Setup complete. Active storage: ${state.config.storagePath}`);
 	if (state.locations.length > 0) {
 		success(`First folder ready: ${state.locations[0].ref}`);
 	}
@@ -911,7 +1357,10 @@ async function setupFlow(force = false): Promise<LoadedState> {
 }
 
 async function interactivePicker(): Promise<void> {
-	const state = await loadState({ allowFallbackToCwd: true });
+	const loadedState = await loadState({ allowFallbackToCwd: true });
+	const state = loadedState
+		? await maybeNotifyIfUpdateAvailable(loadedState)
+		: null;
 	if (!state) {
 		await setupFlow();
 		return;
@@ -931,7 +1380,7 @@ async function interactivePicker(): Promise<void> {
 				value: String(location.id),
 			})),
 			{ name: "Add a saved folder", value: "__add__" },
-			{ name: "Management dashboard", value: "__manage__" },
+			{ name: "Configure open-cli", value: "__config__" },
 			{ name: "Run doctor", value: "__doctor__" },
 			{ name: "Show help", value: "__help__" },
 		],
@@ -941,8 +1390,8 @@ async function interactivePicker(): Promise<void> {
 		await addLocationFlow(state);
 		return;
 	}
-	if (choice === "__manage__") {
-		await runManageMode();
+	if (choice === "__config__") {
+		await configMenuFlow(state);
 		return;
 	}
 	if (choice === "__doctor__") {
@@ -979,7 +1428,10 @@ async function updateFlow(state: LoadedState): Promise<LoadedState> {
 	}
 
 	const branch = state.config.update.branch.trim() || "main";
-	const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "open-update-"));
+	const cloneSource = resolveRepositoryCloneSource(repositoryUrl);
+	const tempRoot = await fs.mkdtemp(
+		path.join(os.tmpdir(), "open-cli-update-"),
+	);
 	const cloneDir = path.join(tempRoot, "repo");
 	const rootDir = state.rootDir;
 
@@ -990,7 +1442,7 @@ async function updateFlow(state: LoadedState): Promise<LoadedState> {
 			"1",
 			"--branch",
 			branch,
-			repositoryUrl,
+			cloneSource,
 			cloneDir,
 		]);
 
@@ -1020,112 +1472,32 @@ async function updateFlow(state: LoadedState): Promise<LoadedState> {
 
 		await runProcess("pnpm", ["install"], { cwd: rootDir });
 		await runProcess("pnpm", ["build"], { cwd: rootDir });
-		await writeConfigPathEnv(state.config.configPath, rootDir);
+		await writeConfigPathEnv(state.config.storagePath, rootDir);
 
-		const reloaded = await requireState();
+		let reloaded = await requireState(false);
+		const installedRevision = detectRepositoryInfo(cloneDir).revision;
+		if (installedRevision) {
+			reloaded = await saveState({
+				...reloaded,
+				config: {
+					...reloaded.config,
+					update: {
+						...reloaded.config.update,
+						check: {
+							...reloaded.config.update.check,
+							installedRevision,
+							lastCheckedAt: "",
+							latestVersion: "",
+							latestRevision: "",
+						},
+					},
+				},
+			});
+		}
 		success("Update complete. Config and storage were preserved.");
 		return reloaded;
 	} finally {
 		await fs.rm(tempRoot, { recursive: true, force: true });
-	}
-}
-
-export async function runManageMode(): Promise<void> {
-	let state = await loadState({ allowFallbackToCwd: true });
-
-	while (true) {
-		console.log(renderBanner());
-		if (state) {
-			console.log(renderConfigSummary(state.config));
-			console.log(`Saved folders: ${state.locations.length}`);
-		} else {
-			warn("No active setup yet.");
-		}
-
-		const action = await select<string>({
-			message: "Manage",
-			choices: [
-				{ name: "Setup", value: "setup" },
-				{ name: "Open a saved folder", value: "open" },
-				{ name: "Add a saved folder", value: "add" },
-				{ name: "List saved folders", value: "list" },
-				{ name: "Remove a saved folder", value: "remove" },
-				{ name: "Rename a reference", value: "rename" },
-				{ name: "Config", value: "config" },
-				{ name: "Doctor", value: "doctor" },
-				{ name: "Update CLI", value: "update" },
-				{ name: "Help", value: "help" },
-				{ name: "Exit", value: "exit" },
-			],
-		});
-
-		if (action === "exit") {
-			return;
-		}
-
-		if (action === "help") {
-			console.log(renderHelp());
-			continue;
-		}
-
-		if (action === "setup") {
-			state = await setupFlow(Boolean(state));
-			continue;
-		}
-
-		if (!state) {
-			throw new Error("Run setup first.");
-		}
-
-		if (action === "open") {
-			const location = await pickLocation(
-				state.locations,
-				"Choose the saved folder to open",
-			);
-			const useDefault = await confirm({
-				message: "Use the default opener?",
-				default: true,
-			});
-			const opener = useDefault
-				? null
-				: await pickOpener(state.config, "Choose an opener");
-			await openLocation(location, state.config, opener?.key ?? null);
-			continue;
-		}
-
-		if (action === "add") {
-			state = await addLocationFlow(state);
-			continue;
-		}
-
-		if (action === "list") {
-			printLocations(state.locations);
-			continue;
-		}
-
-		if (action === "remove") {
-			state = await removeLocationFlow(state);
-			continue;
-		}
-
-		if (action === "rename") {
-			state = await renameLocationFlow(state);
-			continue;
-		}
-
-		if (action === "config") {
-			state = await configMenuFlow(state);
-			continue;
-		}
-
-		if (action === "doctor") {
-			state = await runDoctorFlow(state);
-			continue;
-		}
-
-		if (action === "update") {
-			state = await updateFlow(state);
-		}
 	}
 }
 
@@ -1136,6 +1508,10 @@ export async function runCli(args: string[]): Promise<void> {
 	}
 
 	const [command, ...rest] = args;
+	if (command === "-v" || command === "--version" || command === "version") {
+		await printVersion();
+		return;
+	}
 	const parsed = parseWithOption(rest);
 
 	if (command === "help") {
@@ -1180,7 +1556,7 @@ export async function runCli(args: string[]): Promise<void> {
 
 	if (command === "config") {
 		const state = await requireState();
-		await configMenuFlow(state);
+		await handleConfigCommand(state, parsed.args);
 		return;
 	}
 

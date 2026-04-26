@@ -4,22 +4,49 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import dotenv from "dotenv";
+import { z } from "zod";
 import {
-	APP_CONFIG_VERSION,
-	CONFIG_FILE_NAME,
+	APP_STORAGE_VERSION,
 	type AppConfig,
+	type AppStorage,
+	DEFAULT_UPDATE_REPOSITORY,
 	type LocationRecord,
-	LOCATIONS_FILE_NAME,
-	type OpenerConfig,
-	buildLegacyOpenerCommand,
+	absolutePathSchema,
 	configSchema,
-	getPlatformOpenerPresets,
-	legacyConfigSchema,
-	legacyLocationSchema,
+	type OpenerConfig,
+	openerSchema,
 	locationSchema,
-	storageSchema,
+	locationsSchema,
 	refSchema,
+	STORAGE_FILE_NAME,
+	storageFileSchema,
+	updateCheckSchema,
 } from "./domain";
+
+const LEGACY_CONFIG_FILE_NAME = "config.json";
+const LEGACY_LOCATIONS_FILE_NAME = "locs.json";
+
+const legacySplitConfigSchema = z
+	.object({
+		version: z.union([z.literal(2), z.literal("2")]).optional(),
+		configPath: absolutePathSchema.optional(),
+		storagePath: absolutePathSchema.optional(),
+		storageDir: absolutePathSchema.optional(),
+		storageIndent: z.number().int().min(2).max(8).default(4),
+		openers: z
+			.array(openerSchema)
+			.min(1, "At least one opener is required"),
+		defaultOpenerId: z.number().int().positive(),
+		update: z
+			.object({
+				repositoryUrl: z.string().trim().max(300).default(""),
+				branch: z.string().trim().min(1).max(80).default("main"),
+			})
+			.strict(),
+		createdAt: z.string().trim().min(1),
+		updatedAt: z.string().trim().min(1),
+	})
+	.strict();
 
 export interface LoadedState {
 	rootDir: string;
@@ -44,6 +71,16 @@ function parseJson(raw: string, filePath: string): unknown {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new Error(`Could not parse JSON in ${filePath}: ${reason}`);
 	}
+}
+
+function formatSchemaError(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) {
+		return "Unknown schema validation error";
+	}
+
+	const location = issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
+	return `${issue.message}${location}`;
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
@@ -83,95 +120,182 @@ async function writeJsonFile(
 	);
 }
 
-async function syncEnvWithConfig(
-	configPath: string,
-	rootDir: string,
-): Promise<void> {
-	await writeConfigPathEnv(configPath, rootDir);
-	process.env.CONFIG_PATH = configPath;
+function splitStorage(storage: AppStorage): Omit<LoadedState, "rootDir"> {
+	const { locations, ...config } = storage;
+	return {
+		config,
+		locations,
+	};
 }
 
-function materializePresetOpeners(
-	presets: Array<Omit<OpenerConfig, "id">>,
-): OpenerConfig[] {
-	return presets.map((preset, index) => ({
-		id: index + 1,
-		...preset,
-	}));
-}
-
-function migrateLegacyConfig(
-	raw: unknown,
-	configPath: string,
-	rootDir: string,
-): AppConfig | null {
-	const parsed = legacyConfigSchema.safeParse(raw);
-	if (!parsed.success) {
-		return null;
-	}
-
-	const legacy = parsed.data;
-	const storageDir = path.dirname(configPath);
-	const storagePath =
-		legacy.storagePath ?? path.join(storageDir, LOCATIONS_FILE_NAME);
-	const detected = detectRepositoryInfo(rootDir);
-
-	const openers =
-		legacy.openers?.map((opener, index) => ({
-			id: index + 1,
-			key:
-				opener.name
-					.toLowerCase()
-					.replaceAll(/[^a-z0-9]+/gu, "-")
-					.replaceAll(/^-|-$/gu, "") || `opener-${index + 1}`,
-			label: opener.name,
-			command: buildLegacyOpenerCommand(opener.app),
-			description: `Migrated from legacy option ${opener.opt}`,
-		})) ?? materializePresetOpeners(getPlatformOpenerPresets());
-
-	const defaultOpenerId =
-		legacy.defaultOpener &&
-		openers.some((opener) => opener.id === legacy.defaultOpener)
-			? legacy.defaultOpener
-			: openers[0].id;
-
-	return configSchema.parse({
-		version: APP_CONFIG_VERSION,
-		configPath,
-		storagePath,
-		storageDir,
-		storageIndent: legacy.storageFileIndent ?? 4,
-		openers,
-		defaultOpenerId,
-		update: {
-			repositoryUrl: detected.repositoryUrl,
-			branch: detected.branch,
-		},
-		createdAt: new Date().toISOString(),
+function buildStorageFile(
+	config: AppConfig,
+	locations: LocationRecord[],
+): AppStorage {
+	return storageFileSchema.parse({
+		...config,
+		locations,
 		updatedAt: new Date().toISOString(),
 	});
 }
 
-function migrateLegacyLocations(raw: unknown): LocationRecord[] | null {
-	if (!Array.isArray(raw)) {
+async function syncEnvWithConfig(
+	storagePath: string,
+	rootDir: string,
+): Promise<void> {
+	await writeConfigPathEnv(storagePath, rootDir);
+	process.env.CONFIG_PATH = storagePath;
+}
+
+function getFallbackStoragePath(rootDir: string): string {
+	return path.join(rootDir, "storage", STORAGE_FILE_NAME);
+}
+
+async function migrateSplitStorageLayout(
+	candidatePath: string,
+	rootDir: string,
+	rawCandidate: unknown,
+): Promise<AppStorage | null> {
+	if (
+		path.basename(candidatePath) === STORAGE_FILE_NAME &&
+		rawCandidate !== null
+	) {
 		return null;
 	}
 
-	const migrated = raw.map((item) => {
-		const legacy = legacyLocationSchema.parse(item);
-		return locationSchema.parse({
-			id: legacy.id,
-			ref: legacy.ref,
-			path: legacy.url,
-			note: "",
-		});
+	const storageDir = path.dirname(candidatePath);
+	const legacyConfigPath =
+		path.basename(candidatePath) === LEGACY_CONFIG_FILE_NAME
+			? candidatePath
+			: path.join(storageDir, LEGACY_CONFIG_FILE_NAME);
+	const legacyLocationsPath = path.join(
+		storageDir,
+		LEGACY_LOCATIONS_FILE_NAME,
+	);
+	const nextStoragePath = path.join(storageDir, STORAGE_FILE_NAME);
+
+	const rawLegacyConfig =
+		legacyConfigPath === candidatePath
+			? rawCandidate
+			: await readJsonFile(legacyConfigPath);
+	if (rawLegacyConfig === null) {
+		return null;
+	}
+
+	const parsedConfig = legacySplitConfigSchema.safeParse(rawLegacyConfig);
+	if (!parsedConfig.success) {
+		return null;
+	}
+
+	const rawLocations = await readJsonFile(legacyLocationsPath);
+	const parsedLocations = locationsSchema.safeParse(rawLocations ?? []);
+	if (!parsedLocations.success) {
+		throw new Error(
+			`Legacy locations file does not match the expected schema: ${legacyLocationsPath} (${formatSchemaError(parsedLocations.error)})`,
+		);
+	}
+
+	const repositoryInfo = detectRepositoryInfo(rootDir);
+	const migratedStorage = storageFileSchema.parse({
+		version: APP_STORAGE_VERSION,
+		storagePath: nextStoragePath,
+		storageDir,
+		storageIndent: parsedConfig.data.storageIndent,
+		locations: parsedLocations.data,
+		openers: parsedConfig.data.openers,
+		defaultOpenerId: parsedConfig.data.defaultOpenerId,
+		update: {
+			repositoryUrl:
+				parsedConfig.data.update.repositoryUrl.trim() ||
+				DEFAULT_UPDATE_REPOSITORY,
+			branch: parsedConfig.data.update.branch.trim() || "main",
+			check: updateCheckSchema.parse({
+				lastCheckedAt: "",
+				latestVersion: "",
+				latestRevision: "",
+				installedRevision: repositoryInfo.revision,
+			}),
+		},
+		createdAt: parsedConfig.data.createdAt,
+		updatedAt: new Date().toISOString(),
 	});
 
-	return storageSchema.parse(migrated);
+	await writeJsonFile(
+		migratedStorage.storagePath,
+		migratedStorage,
+		migratedStorage.storageIndent,
+	);
+	if (legacyConfigPath !== migratedStorage.storagePath) {
+		await fs.rm(legacyConfigPath, { force: true });
+	}
+	await fs.rm(legacyLocationsPath, { force: true });
+	await syncEnvWithConfig(migratedStorage.storagePath, rootDir);
+
+	return migratedStorage;
 }
 
-function getFallbackConfigPath(): string {
-	return path.join(process.cwd(), "storage", CONFIG_FILE_NAME);
+async function loadStorageFile(options?: {
+	allowFallbackToCwd?: boolean;
+	rootDir?: string;
+}): Promise<{ rootDir: string; storage: AppStorage } | null> {
+	const rootDir = options?.rootDir ?? getProjectRoot();
+	const configuredPath = getConfiguredPathFromEnv(rootDir);
+	const fallbackPath = getFallbackStoragePath(rootDir);
+	const candidatePaths = [configuredPath];
+
+	if (options?.allowFallbackToCwd && fallbackPath !== configuredPath) {
+		candidatePaths.push(fallbackPath);
+	}
+
+	for (const storagePath of candidatePaths) {
+		if (!storagePath) {
+			continue;
+		}
+
+		const raw = await readJsonFile(storagePath);
+		if (raw === null) {
+			const migrated = await migrateSplitStorageLayout(
+				storagePath,
+				rootDir,
+				raw,
+			);
+			if (migrated) {
+				return {
+					rootDir,
+					storage: migrated,
+				};
+			}
+
+			continue;
+		}
+
+		const parsed = storageFileSchema.safeParse(raw);
+		if (parsed.success) {
+			await syncEnvWithConfig(parsed.data.storagePath, rootDir);
+			return {
+				rootDir,
+				storage: parsed.data,
+			};
+		}
+
+		const migrated = await migrateSplitStorageLayout(
+			storagePath,
+			rootDir,
+			raw,
+		);
+		if (migrated) {
+			return {
+				rootDir,
+				storage: migrated,
+			};
+		}
+
+		throw new Error(
+			`Storage file does not match the expected schema: ${storagePath} (${formatSchemaError(parsed.error)})`,
+		);
+	}
+
+	return null;
 }
 
 export function getProjectRoot(): string {
@@ -269,25 +393,24 @@ export function createOpenerRecord(
 	values: Omit<OpenerConfig, "id">,
 	openers: OpenerConfig[],
 ): OpenerConfig {
-	const record = {
+	const record = openerSchema.parse({
 		id: getNextId(openers),
 		...values,
-	};
-	const parsed = configSchema.shape.openers.element.parse(record);
+	});
 
 	if (
 		openers.some(
-			(item) => item.key.toLowerCase() === parsed.key.toLowerCase(),
+			(item) => item.key.toLowerCase() === record.key.toLowerCase(),
 		)
 	) {
-		throw new Error(`Opener key already exists: ${parsed.key}`);
+		throw new Error(`Opener key already exists: ${record.key}`);
 	}
 
-	return parsed;
+	return record;
 }
 
 export async function writeConfigPathEnv(
-	configPath: string,
+	storagePath: string,
 	rootDir = getProjectRoot(),
 ): Promise<void> {
 	const envPath = path.join(rootDir, ".env");
@@ -311,111 +434,33 @@ export async function writeConfigPathEnv(
 	const lines =
 		existing === "" ? [] : existing.split(/\r?\n/u).filter(Boolean);
 	const nextLines = lines.filter((line) => !line.startsWith("CONFIG_PATH="));
-	nextLines.push(`CONFIG_PATH=${configPath}`);
+	nextLines.push(`CONFIG_PATH=${storagePath}`);
 	await fs.writeFile(envPath, nextLines.join("\n") + "\n", "utf8");
 }
 
-export async function saveConfig(
-	config: AppConfig,
-	rootDir = getProjectRoot(),
-): Promise<AppConfig> {
-	const parsed = configSchema.parse({
-		...config,
-		updatedAt: new Date().toISOString(),
-	});
-	await writeJsonFile(parsed.configPath, parsed, parsed.storageIndent);
-	await syncEnvWithConfig(parsed.configPath, rootDir);
-	return parsed;
-}
+export async function saveState(state: LoadedState): Promise<LoadedState> {
+	const storage = buildStorageFile(state.config, state.locations);
+	await writeJsonFile(storage.storagePath, storage, storage.storageIndent);
+	await syncEnvWithConfig(storage.storagePath, state.rootDir);
 
-export async function saveLocations(
-	config: AppConfig,
-	locations: LocationRecord[],
-): Promise<LocationRecord[]> {
-	const parsed = storageSchema.parse(locations);
-	await writeJsonFile(config.storagePath, parsed, config.storageIndent);
-	return parsed;
-}
-
-export async function readConfig(options?: {
-	allowFallbackToCwd?: boolean;
-	rootDir?: string;
-}): Promise<AppConfig | null> {
-	const rootDir = options?.rootDir ?? getProjectRoot();
-	const configuredPath = getConfiguredPathFromEnv(rootDir);
-	const fallbackPath = getFallbackConfigPath();
-	const configPath =
-		configuredPath ?? (options?.allowFallbackToCwd ? fallbackPath : null);
-
-	if (!configPath) {
-		return null;
-	}
-
-	const raw = await readJsonFile(configPath);
-	if (raw === null) {
-		return null;
-	}
-
-	const parsed = configSchema.safeParse(raw);
-	if (parsed.success) {
-		await syncEnvWithConfig(parsed.data.configPath, rootDir);
-		return parsed.data;
-	}
-
-	const migrated = migrateLegacyConfig(raw, configPath, rootDir);
-	if (!migrated) {
-		throw new Error(
-			`Config file does not match the expected schema: ${configPath}`,
-		);
-	}
-
-	await saveConfig(migrated, rootDir);
-	return migrated;
-}
-
-export async function readLocations(
-	config: AppConfig,
-): Promise<LocationRecord[]> {
-	const raw = await readJsonFile(config.storagePath);
-	if (raw === null) {
-		return [];
-	}
-
-	const parsed = storageSchema.safeParse(raw);
-	if (parsed.success) {
-		return parsed.data;
-	}
-
-	const migrated = migrateLegacyLocations(raw);
-	if (!migrated) {
-		throw new Error(
-			`Storage file does not match the expected schema: ${config.storagePath}`,
-		);
-	}
-
-	await saveLocations(config, migrated);
-	return migrated;
+	return {
+		rootDir: state.rootDir,
+		...splitStorage(storage),
+	};
 }
 
 export async function loadState(options?: {
 	allowFallbackToCwd?: boolean;
 	rootDir?: string;
 }): Promise<LoadedState | null> {
-	const rootDir = options?.rootDir ?? getProjectRoot();
-	const config = await readConfig({
-		allowFallbackToCwd: options?.allowFallbackToCwd,
-		rootDir,
-	});
-
-	if (!config) {
+	const loaded = await loadStorageFile(options);
+	if (!loaded) {
 		return null;
 	}
 
-	const locations = await readLocations(config);
 	return {
-		rootDir,
-		config,
-		locations,
+		rootDir: loaded.rootDir,
+		...splitStorage(loaded.storage),
 	};
 }
 
@@ -424,21 +469,27 @@ export async function initializeRuntime(
 	rootDir = getProjectRoot(),
 ): Promise<LoadedState> {
 	const storageDir = normalizeUserPath(options.storageDir);
-	const configPath = path.join(storageDir, CONFIG_FILE_NAME);
-	const storagePath = path.join(storageDir, LOCATIONS_FILE_NAME);
+	const storagePath = path.join(storageDir, STORAGE_FILE_NAME);
+	const repositoryInfo = detectRepositoryInfo(rootDir);
 	const now = new Date().toISOString();
 
 	const config = configSchema.parse({
-		version: APP_CONFIG_VERSION,
-		configPath,
+		version: APP_STORAGE_VERSION,
 		storagePath,
 		storageDir,
 		storageIndent: options.storageIndent,
 		openers: options.openers,
 		defaultOpenerId: options.defaultOpenerId,
 		update: {
-			repositoryUrl: options.repositoryUrl.trim(),
+			repositoryUrl:
+				options.repositoryUrl.trim() || DEFAULT_UPDATE_REPOSITORY,
 			branch: options.branch.trim() || "main",
+			check: updateCheckSchema.parse({
+				lastCheckedAt: "",
+				latestVersion: "",
+				latestRevision: "",
+				installedRevision: repositoryInfo.revision,
+			}),
 		},
 		createdAt: now,
 		updatedAt: now,
@@ -449,60 +500,44 @@ export async function initializeRuntime(
 		: [];
 
 	await ensureDirectory(storageDir);
-	await saveConfig(config, rootDir);
-	await saveLocations(config, initialLocations);
-
-	return {
+	return saveState({
 		rootDir,
 		config,
 		locations: initialLocations,
-	};
+	});
 }
 
 export async function moveStorageDirectory(
-	config: AppConfig,
-	locations: LocationRecord[],
+	state: LoadedState,
 	nextStorageDir: string,
-	rootDir = getProjectRoot(),
 ): Promise<LoadedState> {
 	const normalizedDir = normalizeUserPath(nextStorageDir);
-	if (normalizedDir === config.storageDir) {
-		return {
-			rootDir,
-			config,
-			locations,
-		};
+	if (normalizedDir === state.config.storageDir) {
+		return state;
 	}
 
-	const nextConfig = configSchema.parse({
-		...config,
-		configPath: path.join(normalizedDir, CONFIG_FILE_NAME),
-		storagePath: path.join(normalizedDir, LOCATIONS_FILE_NAME),
-		storageDir: normalizedDir,
-		updatedAt: new Date().toISOString(),
+	const previousStoragePath = state.config.storagePath;
+	const nextState = await saveState({
+		...state,
+		config: configSchema.parse({
+			...state.config,
+			storagePath: path.join(normalizedDir, STORAGE_FILE_NAME),
+			storageDir: normalizedDir,
+			updatedAt: new Date().toISOString(),
+		}),
 	});
 
-	await ensureDirectory(normalizedDir);
-	await saveLocations(nextConfig, locations);
-	await saveConfig(nextConfig, rootDir);
-
-	if (config.storagePath !== nextConfig.storagePath) {
-		await fs.rm(config.storagePath, { force: true });
-	}
-	if (config.configPath !== nextConfig.configPath) {
-		await fs.rm(config.configPath, { force: true });
+	if (previousStoragePath !== nextState.config.storagePath) {
+		await fs.rm(previousStoragePath, { force: true });
 	}
 
-	return {
-		rootDir,
-		config: nextConfig,
-		locations,
-	};
+	return nextState;
 }
 
 export function detectRepositoryInfo(rootDir = getProjectRoot()): {
 	repositoryUrl: string;
 	branch: string;
+	revision: string;
 } {
 	const repositoryUrlResult = spawnSync(
 		"git",
@@ -520,6 +555,10 @@ export function detectRepositoryInfo(rootDir = getProjectRoot()): {
 			encoding: "utf8",
 		},
 	);
+	const revisionResult = spawnSync("git", ["rev-parse", "HEAD"], {
+		cwd: rootDir,
+		encoding: "utf8",
+	});
 
 	return {
 		repositoryUrl:
@@ -530,6 +569,8 @@ export function detectRepositoryInfo(rootDir = getProjectRoot()): {
 			branchResult.status === 0 && branchResult.stdout.trim() !== "HEAD"
 				? branchResult.stdout.trim()
 				: "main",
+		revision:
+			revisionResult.status === 0 ? revisionResult.stdout.trim() : "",
 	};
 }
 

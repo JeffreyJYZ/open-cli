@@ -1,9 +1,9 @@
 import path from "node:path";
 import { z } from "zod";
 
-export const APP_CONFIG_VERSION = 2;
-export const CONFIG_FILE_NAME = "config.json";
-export const LOCATIONS_FILE_NAME = "locs.json";
+export const APP_STORAGE_VERSION = 3;
+export const STORAGE_FILE_NAME = "storage.json";
+export const DEFAULT_UPDATE_REPOSITORY = "JeffreyJYZ/open-cli";
 
 const RESERVED_COMMANDS = new Set([
 	"add",
@@ -14,7 +14,6 @@ const RESERVED_COMMANDS = new Set([
 	"help",
 	"list",
 	"ls",
-	"manage",
 	"open",
 	"rename",
 	"rm",
@@ -25,13 +24,12 @@ const RESERVED_COMMANDS = new Set([
 const uniqueIssue = (
 	ctx: z.RefinementCtx,
 	message: string,
-	index: number,
-	key: string,
+	path: Array<string | number>,
 ) => {
 	ctx.addIssue({
 		code: "custom",
 		message,
-		path: [index, key],
+		path,
 	});
 };
 
@@ -83,7 +81,7 @@ export const locationSchema = z
 
 export type LocationRecord = z.infer<typeof locationSchema>;
 
-export const storageSchema = z
+export const locationsSchema = z
 	.array(locationSchema)
 	.superRefine((items, ctx) => {
 		const refs = new Set<string>();
@@ -92,33 +90,96 @@ export const storageSchema = z
 		items.forEach((item, index) => {
 			const lowerRef = item.ref.toLowerCase();
 			if (refs.has(lowerRef)) {
-				uniqueIssue(
-					ctx,
-					`Duplicate reference: ${item.ref}`,
+				uniqueIssue(ctx, `Duplicate reference: ${item.ref}`, [
 					index,
 					"ref",
-				);
+				]);
 			} else {
 				refs.add(lowerRef);
 			}
 
 			if (ids.has(item.id)) {
-				uniqueIssue(
-					ctx,
-					`Duplicate location id: ${item.id}`,
+				uniqueIssue(ctx, `Duplicate location id: ${item.id}`, [
 					index,
 					"id",
-				);
+				]);
 			} else {
 				ids.add(item.id);
 			}
 		});
 	});
 
+export const updateCheckSchema = z
+	.object({
+		lastCheckedAt: z.string().trim().max(80).default(""),
+		latestVersion: z.string().trim().max(40).default(""),
+		latestRevision: z.string().trim().max(80).default(""),
+		installedRevision: z.string().trim().max(80).default(""),
+	})
+	.strict();
+
+export type UpdateCheckState = z.infer<typeof updateCheckSchema>;
+
+const updateSchema = z
+	.object({
+		repositoryUrl: z.string().trim().max(300).default(""),
+		branch: z.string().trim().min(1).max(80).default("main"),
+		check: updateCheckSchema.default({
+			lastCheckedAt: "",
+			latestVersion: "",
+			latestRevision: "",
+			installedRevision: "",
+		}),
+	})
+	.strict();
+
+function validateOpeners(
+	config: {
+		openers: OpenerConfig[];
+		defaultOpenerId: number;
+	},
+	ctx: z.RefinementCtx,
+) {
+	const openerIds = new Set<number>();
+	const openerKeys = new Set<string>();
+
+	config.openers.forEach((opener, index) => {
+		const lowerKey = opener.key.toLowerCase();
+		if (openerIds.has(opener.id)) {
+			uniqueIssue(ctx, `Duplicate opener id: ${opener.id}`, [
+				"openers",
+				index,
+				"id",
+			]);
+		} else {
+			openerIds.add(opener.id);
+		}
+
+		if (openerKeys.has(lowerKey)) {
+			uniqueIssue(ctx, `Duplicate opener key: ${opener.key}`, [
+				"openers",
+				index,
+				"key",
+			]);
+		} else {
+			openerKeys.add(lowerKey);
+		}
+	});
+
+	if (
+		!config.openers.some((opener) => opener.id === config.defaultOpenerId)
+	) {
+		ctx.addIssue({
+			code: "custom",
+			message: "Default opener id does not exist in openers",
+			path: ["defaultOpenerId"],
+		});
+	}
+}
+
 export const configSchema = z
 	.object({
-		version: z.literal(APP_CONFIG_VERSION),
-		configPath: absolutePathSchema,
+		version: z.literal(APP_STORAGE_VERSION),
 		storagePath: absolutePathSchema,
 		storageDir: absolutePathSchema,
 		storageIndent: z.number().int().min(2).max(8).default(4),
@@ -126,88 +187,34 @@ export const configSchema = z
 			.array(openerSchema)
 			.min(1, "At least one opener is required"),
 		defaultOpenerId: z.number().int().positive(),
-		update: z
-			.object({
-				repositoryUrl: z.string().trim().max(300).default(""),
-				branch: z.string().trim().min(1).max(80).default("main"),
-			})
-			.strict(),
+		update: updateSchema,
 		createdAt: z.string().trim().min(1),
 		updatedAt: z.string().trim().min(1),
 	})
 	.strict()
-	.superRefine((config, ctx) => {
-		const openerIds = new Set<number>();
-		const openerKeys = new Set<string>();
-
-		config.openers.forEach((opener, index) => {
-			const lowerKey = opener.key.toLowerCase();
-			if (openerIds.has(opener.id)) {
-				uniqueIssue(
-					ctx,
-					`Duplicate opener id: ${opener.id}`,
-					index,
-					"id",
-				);
-			} else {
-				openerIds.add(opener.id);
-			}
-
-			if (openerKeys.has(lowerKey)) {
-				uniqueIssue(
-					ctx,
-					`Duplicate opener key: ${opener.key}`,
-					index,
-					"key",
-				);
-			} else {
-				openerKeys.add(lowerKey);
-			}
-		});
-
-		if (
-			!config.openers.some(
-				(opener) => opener.id === config.defaultOpenerId,
-			)
-		) {
-			ctx.addIssue({
-				code: "custom",
-				message: "Default opener id does not exist in openers",
-				path: ["defaultOpenerId"],
-			});
-		}
-	});
+	.superRefine(validateOpeners);
 
 export type AppConfig = z.infer<typeof configSchema>;
 
-export const legacyConfigSchema = z
+export const storageFileSchema = z
 	.object({
-		storagePath: absolutePathSchema.optional(),
-		storageFileIndent: z.number().int().min(1).max(8).optional(),
-		configPath: absolutePathSchema.optional(),
+		version: z.literal(APP_STORAGE_VERSION),
+		storagePath: absolutePathSchema,
+		storageDir: absolutePathSchema,
+		storageIndent: z.number().int().min(2).max(8).default(4),
+		locations: locationsSchema,
 		openers: z
-			.array(
-				z
-					.object({
-						id: z.number().int().positive(),
-						name: z.string().trim().min(1),
-						opt: z.string().trim().min(1),
-						app: z.string().trim().min(1),
-					})
-					.strict(),
-			)
-			.optional(),
-		defaultOpener: z.number().int().positive().optional(),
+			.array(openerSchema)
+			.min(1, "At least one opener is required"),
+		defaultOpenerId: z.number().int().positive(),
+		update: updateSchema,
+		createdAt: z.string().trim().min(1),
+		updatedAt: z.string().trim().min(1),
 	})
-	.loose();
+	.strict()
+	.superRefine(validateOpeners);
 
-export const legacyLocationSchema = z
-	.object({
-		id: z.number().int().positive(),
-		ref: refSchema,
-		url: absolutePathSchema,
-	})
-	.loose();
+export type AppStorage = z.infer<typeof storageFileSchema>;
 
 export interface OpenerPreset {
 	key: string;
@@ -273,34 +280,4 @@ export function getPlatformOpenerPresets(
 			description: "Open folders in Zed.",
 		},
 	];
-}
-
-export function buildLegacyOpenerCommand(
-	appName: string,
-	platform = process.platform,
-): string {
-	const escapedAppName = appName.replaceAll('"', '\\"');
-	const normalized = appName.toLowerCase();
-
-	if (platform === "darwin") {
-		return `/usr/bin/open -a "${escapedAppName}" {path}`;
-	}
-
-	if (normalized.includes("visual studio code")) {
-		return "code -n {path}";
-	}
-
-	if (normalized.includes("cursor")) {
-		return "cursor {path}";
-	}
-
-	if (normalized.includes("zed")) {
-		return "zed {path}";
-	}
-
-	if (platform === "win32") {
-		return `cmd /c start "" "${escapedAppName}" {path}`;
-	}
-
-	return `xdg-open {path}`;
 }

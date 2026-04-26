@@ -1,20 +1,22 @@
 export {
-	APP_CONFIG_VERSION,
-	CONFIG_FILE_NAME,
-	LOCATIONS_FILE_NAME,
+	APP_STORAGE_VERSION,
+	DEFAULT_UPDATE_REPOSITORY,
+	STORAGE_FILE_NAME,
 	absolutePathSchema,
 	configSchema,
-	legacyConfigSchema,
-	legacyLocationSchema,
+	locationsSchema,
 	locationSchema,
 	openerSchema,
 	refSchema,
-	storageSchema,
+	storageFileSchema,
+	updateCheckSchema,
 } from "./domain";
 
 export type {
 	AppConfig,
+	AppStorage,
 	LocationRecord,
 	OpenerConfig,
 	OpenerPreset,
+	UpdateCheckState,
 } from "./domain";

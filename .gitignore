@@ -1,8 +1,6 @@
 node_modules/
 .turbo/
 storage/
-scripts/
 .DS_Store
 .vscode/
-dist/
-.env.local
+.env.**

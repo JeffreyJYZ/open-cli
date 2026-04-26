@@ -37,7 +37,6 @@ let builds: [string[], string][];
 if (cmd === "all") {
 	builds = [
 		[["src/index.ts"], "dist/index.min.js"],
-		[["src/manage.ts"], "dist/manage.js"],
 		[["src/build.ts"], "dist/build.js"],
 	];
 } else {
@@ -71,7 +70,7 @@ async function main(builds: [string[], string][]) {
 	}
 
 	await writeDistPackageJson();
-	await removeLegacyCjsOutputs();
+	await removeStaleBuildArtifacts();
 }
 
 async function writeDistPackageJson() {
@@ -83,8 +82,13 @@ async function writeDistPackageJson() {
 	);
 }
 
-async function removeLegacyCjsOutputs() {
-	const files = ["dist/index.min.cjs", "dist/manage.cjs", "dist/build.cjs"];
+async function removeStaleBuildArtifacts() {
+	const files = [
+		"dist/index.min.cjs",
+		"dist/manage.js",
+		"dist/manage.cjs",
+		"dist/build.cjs",
+	];
 	await Promise.all(
 		files.map((filePath) => fs.rm(filePath, { force: true })),
 	);

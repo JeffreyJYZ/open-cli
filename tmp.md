@@ -32,7 +32,7 @@ Dangerous actions such as clearing or changing storage/config paths need confirm
 - `add`:  
   usage: `add \<ref> \<path (absolute)`
 
-- `pnpm manage`: run the manage.js script in dist.
+- `config`: should support both an interactive menu and direct command-based changes.
 
 - `config`:  
   To change the configuration. add options like choosing the command for bin, choosing storage paths etc. (important: config path (once initialized) should always be in .env as CONFIG_PATH as an absolute url)

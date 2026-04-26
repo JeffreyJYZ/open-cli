@@ -1,22 +1,26 @@
 {
-	"name": "open",
+	"name": "open-cli",
 	"version": "1.0.0",
-	"description": "Cross-platform folder opener for developers",
+	"description": "Cross-platform project launcher for developers",
 	"main": "dist/index.min.js",
 	"scripts": {
 		"build": "turbo run bundle",
 		"bundle": "tsx src/build.ts",
-		"test": "echo \"Error: no test specified\" && exit 1",
+		"test": "pnpm build && node scripts/test.cjs",
 		"link": "pnpm link",
 		"unlink": "pnpm unlink",
-		"lint": "eslint . && prettier --check . && tsc --noEmit && tsgo --noEmit",
-		"format": "prettier --write .",
-		"manage": "node dist/manage.js"
+		"lint": "eslint . && prettier --check . && tsc --noEmit",
+		"format": "prettier --write ."
 	},
 	"bin": {
 		"o": "dist/index.min.js"
 	},
-	"keywords": [],
+	"keywords": [
+		"cli",
+		"launcher",
+		"productivity",
+		"open-cli"
+	],
 	"author": "",
 	"license": "ISC",
 	"type": "module",
