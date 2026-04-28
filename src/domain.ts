@@ -1,7 +1,7 @@
 import path from "node:path";
 import { z } from "zod";
 
-export const APP_STORAGE_VERSION = 3;
+export const APP_STORAGE_VERSION = 1;
 export const STORAGE_FILE_NAME = "storage.json";
 export const DEFAULT_UPDATE_REPOSITORY = "JeffreyJYZ/open-cli";
 
