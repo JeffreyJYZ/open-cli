@@ -4,8 +4,12 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
-const packageJson = JSON.parse(
-	fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
+const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+// The schema pins a single version; read it from source so the fixture cannot drift again.
+const appStorageVersion = Number(
+	fs
+		.readFileSync(path.join(repoRoot, "src/domain.ts"), "utf8")
+		.match(/APP_STORAGE_VERSION = (\d+)/)?.[1],
 );
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "open-cli-test-"));
 const storageDir = path.join(tempRoot, "storage");
@@ -16,7 +20,7 @@ fs.writeFileSync(
 	storagePath,
 	JSON.stringify(
 		{
-			version: 3,
+			version: appStorageVersion,
 			storagePath,
 			storageDir,
 			storageIndent: 4,
@@ -86,9 +90,7 @@ const version = spawnSync(process.execPath, ["dist/index.min.js", "-v"], {
 	env,
 });
 if (version.status !== 0 || version.stdout.trim() !== packageJson.version) {
-	throw new Error(
-		version.stderr || version.stdout || "version command failed",
-	);
+	throw new Error(version.stderr || version.stdout || "version command failed");
 }
 
 const configSet = spawnSync(
@@ -101,9 +103,7 @@ const configSet = spawnSync(
 	},
 );
 if (configSet.status !== 0) {
-	throw new Error(
-		configSet.stderr || configSet.stdout || "config set command failed",
-	);
+	throw new Error(configSet.stderr || configSet.stdout || "config set command failed");
 }
 
 const updatedStorage = JSON.parse(fs.readFileSync(storagePath, "utf8"));
