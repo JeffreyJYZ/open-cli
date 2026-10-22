@@ -1,14 +1,12 @@
-import { build, type BuildOptions } from "esbuild";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { type BuildOptions, build } from "esbuild";
 
 const cmd = process.argv[2] ?? "all";
 
 function fatalError(...messages: unknown[]): never {
 	const text = messages
-		.map((message) =>
-			message instanceof Error ? message.message : String(message),
-		)
+		.map((message) => (message instanceof Error ? message.message : String(message)))
 		.join(" ");
 	console.error(text);
 	process.exit(1);
@@ -83,13 +81,6 @@ async function writeDistPackageJson() {
 }
 
 async function removeStaleBuildArtifacts() {
-	const files = [
-		"dist/index.min.cjs",
-		"dist/manage.js",
-		"dist/manage.cjs",
-		"dist/build.cjs",
-	];
-	await Promise.all(
-		files.map((filePath) => fs.rm(filePath, { force: true })),
-	);
+	const files = ["dist/index.min.cjs", "dist/manage.js", "dist/manage.cjs", "dist/build.cjs"];
+	await Promise.all(files.map((filePath) => fs.rm(filePath, { force: true })));
 }

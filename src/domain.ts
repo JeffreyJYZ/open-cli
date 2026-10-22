@@ -21,11 +21,7 @@ const RESERVED_COMMANDS = new Set([
 	"update",
 ]);
 
-const uniqueIssue = (
-	ctx: z.RefinementCtx,
-	message: string,
-	path: Array<string | number>,
-) => {
+const uniqueIssue = (ctx: z.RefinementCtx, message: string, path: Array<string | number>) => {
 	ctx.addIssue({
 		code: "custom",
 		message,
@@ -81,33 +77,25 @@ export const locationSchema = z
 
 export type LocationRecord = z.infer<typeof locationSchema>;
 
-export const locationsSchema = z
-	.array(locationSchema)
-	.superRefine((items, ctx) => {
-		const refs = new Set<string>();
-		const ids = new Set<number>();
+export const locationsSchema = z.array(locationSchema).superRefine((items, ctx) => {
+	const refs = new Set<string>();
+	const ids = new Set<number>();
 
-		items.forEach((item, index) => {
-			const lowerRef = item.ref.toLowerCase();
-			if (refs.has(lowerRef)) {
-				uniqueIssue(ctx, `Duplicate reference: ${item.ref}`, [
-					index,
-					"ref",
-				]);
-			} else {
-				refs.add(lowerRef);
-			}
+	items.forEach((item, index) => {
+		const lowerRef = item.ref.toLowerCase();
+		if (refs.has(lowerRef)) {
+			uniqueIssue(ctx, `Duplicate reference: ${item.ref}`, [index, "ref"]);
+		} else {
+			refs.add(lowerRef);
+		}
 
-			if (ids.has(item.id)) {
-				uniqueIssue(ctx, `Duplicate location id: ${item.id}`, [
-					index,
-					"id",
-				]);
-			} else {
-				ids.add(item.id);
-			}
-		});
+		if (ids.has(item.id)) {
+			uniqueIssue(ctx, `Duplicate location id: ${item.id}`, [index, "id"]);
+		} else {
+			ids.add(item.id);
+		}
 	});
+});
 
 export const updateCheckSchema = z
 	.object({
@@ -146,29 +134,19 @@ function validateOpeners(
 	config.openers.forEach((opener, index) => {
 		const lowerKey = opener.key.toLowerCase();
 		if (openerIds.has(opener.id)) {
-			uniqueIssue(ctx, `Duplicate opener id: ${opener.id}`, [
-				"openers",
-				index,
-				"id",
-			]);
+			uniqueIssue(ctx, `Duplicate opener id: ${opener.id}`, ["openers", index, "id"]);
 		} else {
 			openerIds.add(opener.id);
 		}
 
 		if (openerKeys.has(lowerKey)) {
-			uniqueIssue(ctx, `Duplicate opener key: ${opener.key}`, [
-				"openers",
-				index,
-				"key",
-			]);
+			uniqueIssue(ctx, `Duplicate opener key: ${opener.key}`, ["openers", index, "key"]);
 		} else {
 			openerKeys.add(lowerKey);
 		}
 	});
 
-	if (
-		!config.openers.some((opener) => opener.id === config.defaultOpenerId)
-	) {
+	if (!config.openers.some((opener) => opener.id === config.defaultOpenerId)) {
 		ctx.addIssue({
 			code: "custom",
 			message: "Default opener id does not exist in openers",
@@ -183,9 +161,7 @@ export const configSchema = z
 		storagePath: absolutePathSchema,
 		storageDir: absolutePathSchema,
 		storageIndent: z.number().int().min(2).max(8).default(4),
-		openers: z
-			.array(openerSchema)
-			.min(1, "At least one opener is required"),
+		openers: z.array(openerSchema).min(1, "At least one opener is required"),
 		defaultOpenerId: z.number().int().positive(),
 		update: updateSchema,
 		createdAt: z.string().trim().min(1),
@@ -203,9 +179,7 @@ export const storageFileSchema = z
 		storageDir: absolutePathSchema,
 		storageIndent: z.number().int().min(2).max(8).default(4),
 		locations: locationsSchema,
-		openers: z
-			.array(openerSchema)
-			.min(1, "At least one opener is required"),
+		openers: z.array(openerSchema).min(1, "At least one opener is required"),
 		defaultOpenerId: z.number().int().positive(),
 		update: updateSchema,
 		createdAt: z.string().trim().min(1),
@@ -233,9 +207,7 @@ export function getPlatformLabel(platform = process.platform): string {
 	return "Linux";
 }
 
-export function getPlatformOpenerPresets(
-	platform = process.platform,
-): OpenerPreset[] {
+export function getPlatformOpenerPresets(platform = process.platform): OpenerPreset[] {
 	const systemPreset: OpenerPreset =
 		platform === "darwin"
 			? {
@@ -255,8 +227,7 @@ export function getPlatformOpenerPresets(
 						key: "system",
 						label: "System File Manager",
 						command: "xdg-open {path}",
-						description:
-							"Open folders with the default file manager.",
+						description: "Open folders with the default file manager.",
 					};
 
 	return [

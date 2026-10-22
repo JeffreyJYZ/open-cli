@@ -9,14 +9,14 @@ import {
 	APP_STORAGE_VERSION,
 	type AppConfig,
 	type AppStorage,
-	DEFAULT_UPDATE_REPOSITORY,
-	type LocationRecord,
 	absolutePathSchema,
 	configSchema,
-	type OpenerConfig,
-	openerSchema,
+	DEFAULT_UPDATE_REPOSITORY,
+	type LocationRecord,
 	locationSchema,
 	locationsSchema,
+	type OpenerConfig,
+	openerSchema,
 	refSchema,
 	STORAGE_FILE_NAME,
 	storageFileSchema,
@@ -33,9 +33,7 @@ const legacySplitConfigSchema = z
 		storagePath: absolutePathSchema.optional(),
 		storageDir: absolutePathSchema.optional(),
 		storageIndent: z.number().int().min(2).max(8).default(4),
-		openers: z
-			.array(openerSchema)
-			.min(1, "At least one opener is required"),
+		openers: z.array(openerSchema).min(1, "At least one opener is required"),
 		defaultOpenerId: z.number().int().positive(),
 		update: z
 			.object({
@@ -91,12 +89,7 @@ async function readJsonFile(filePath: string): Promise<unknown> {
 		}
 		return parseJson(raw, filePath);
 	} catch (error) {
-		if (
-			typeof error === "object" &&
-			error &&
-			"code" in error &&
-			error.code === "ENOENT"
-		) {
+		if (typeof error === "object" && error && "code" in error && error.code === "ENOENT") {
 			return null;
 		}
 		throw error;
@@ -107,17 +100,9 @@ async function ensureDirectory(dirPath: string): Promise<void> {
 	await fs.mkdir(dirPath, { recursive: true });
 }
 
-async function writeJsonFile(
-	filePath: string,
-	data: unknown,
-	indent: number,
-): Promise<void> {
+async function writeJsonFile(filePath: string, data: unknown, indent: number): Promise<void> {
 	await ensureDirectory(path.dirname(filePath));
-	await fs.writeFile(
-		filePath,
-		JSON.stringify(data, null, indent) + "\n",
-		"utf8",
-	);
+	await fs.writeFile(filePath, JSON.stringify(data, null, indent) + "\n", "utf8");
 }
 
 function splitStorage(storage: AppStorage): Omit<LoadedState, "rootDir"> {
@@ -128,10 +113,7 @@ function splitStorage(storage: AppStorage): Omit<LoadedState, "rootDir"> {
 	};
 }
 
-function buildStorageFile(
-	config: AppConfig,
-	locations: LocationRecord[],
-): AppStorage {
+function buildStorageFile(config: AppConfig, locations: LocationRecord[]): AppStorage {
 	return storageFileSchema.parse({
 		...config,
 		locations,
@@ -139,10 +121,7 @@ function buildStorageFile(
 	});
 }
 
-async function syncEnvWithConfig(
-	storagePath: string,
-	rootDir: string,
-): Promise<void> {
+async function syncEnvWithConfig(storagePath: string, rootDir: string): Promise<void> {
 	await writeConfigPathEnv(storagePath, rootDir);
 	process.env.CONFIG_PATH = storagePath;
 }
@@ -156,10 +135,7 @@ async function migrateSplitStorageLayout(
 	rootDir: string,
 	rawCandidate: unknown,
 ): Promise<AppStorage | null> {
-	if (
-		path.basename(candidatePath) === STORAGE_FILE_NAME &&
-		rawCandidate !== null
-	) {
+	if (path.basename(candidatePath) === STORAGE_FILE_NAME && rawCandidate !== null) {
 		return null;
 	}
 
@@ -168,16 +144,11 @@ async function migrateSplitStorageLayout(
 		path.basename(candidatePath) === LEGACY_CONFIG_FILE_NAME
 			? candidatePath
 			: path.join(storageDir, LEGACY_CONFIG_FILE_NAME);
-	const legacyLocationsPath = path.join(
-		storageDir,
-		LEGACY_LOCATIONS_FILE_NAME,
-	);
+	const legacyLocationsPath = path.join(storageDir, LEGACY_LOCATIONS_FILE_NAME);
 	const nextStoragePath = path.join(storageDir, STORAGE_FILE_NAME);
 
 	const rawLegacyConfig =
-		legacyConfigPath === candidatePath
-			? rawCandidate
-			: await readJsonFile(legacyConfigPath);
+		legacyConfigPath === candidatePath ? rawCandidate : await readJsonFile(legacyConfigPath);
 	if (rawLegacyConfig === null) {
 		return null;
 	}
@@ -206,8 +177,7 @@ async function migrateSplitStorageLayout(
 		defaultOpenerId: parsedConfig.data.defaultOpenerId,
 		update: {
 			repositoryUrl:
-				parsedConfig.data.update.repositoryUrl.trim() ||
-				DEFAULT_UPDATE_REPOSITORY,
+				parsedConfig.data.update.repositoryUrl.trim() || DEFAULT_UPDATE_REPOSITORY,
 			branch: parsedConfig.data.update.branch.trim() || "main",
 			check: updateCheckSchema.parse({
 				lastCheckedAt: "",
@@ -254,11 +224,7 @@ async function loadStorageFile(options?: {
 
 		const raw = await readJsonFile(storagePath);
 		if (raw === null) {
-			const migrated = await migrateSplitStorageLayout(
-				storagePath,
-				rootDir,
-				raw,
-			);
+			const migrated = await migrateSplitStorageLayout(storagePath, rootDir, raw);
 			if (migrated) {
 				return {
 					rootDir,
@@ -278,11 +244,7 @@ async function loadStorageFile(options?: {
 			};
 		}
 
-		const migrated = await migrateSplitStorageLayout(
-			storagePath,
-			rootDir,
-			raw,
-		);
+		const migrated = await migrateSplitStorageLayout(storagePath, rootDir, raw);
 		if (migrated) {
 			return {
 				rootDir,
@@ -320,17 +282,13 @@ export function loadEnvironment(rootDir = getProjectRoot()): void {
 	dotenv.config({ path: path.join(rootDir, ".env.local"), quiet: true });
 }
 
-export function getConfiguredPathFromEnv(
-	rootDir = getProjectRoot(),
-): string | null {
+export function getConfiguredPathFromEnv(rootDir = getProjectRoot()): string | null {
 	loadEnvironment(rootDir);
 	const configPath = process.env.CONFIG_PATH?.trim();
 	if (!configPath) {
 		return null;
 	}
-	return path.isAbsolute(configPath)
-		? configPath
-		: path.resolve(rootDir, configPath);
+	return path.isAbsolute(configPath) ? configPath : path.resolve(rootDir, configPath);
 }
 
 export function getDefaultStorageDir(): string {
@@ -338,9 +296,7 @@ export function getDefaultStorageDir(): string {
 }
 
 export function getNextId(items: Array<{ id: number }>): number {
-	return items.length === 0
-		? 1
-		: Math.max(...items.map((item) => item.id)) + 1;
+	return items.length === 0 ? 1 : Math.max(...items.map((item) => item.id)) + 1;
 }
 
 export function normalizeUserPath(input: string): string {
@@ -374,11 +330,7 @@ export function createLocationRecord(
 		note: values.note ?? "",
 	});
 
-	if (
-		locations.some(
-			(item) => item.ref.toLowerCase() === record.ref.toLowerCase(),
-		)
-	) {
+	if (locations.some((item) => item.ref.toLowerCase() === record.ref.toLowerCase())) {
 		throw new Error(`Reference already exists: ${record.ref}`);
 	}
 
@@ -398,11 +350,7 @@ export function createOpenerRecord(
 		...values,
 	});
 
-	if (
-		openers.some(
-			(item) => item.key.toLowerCase() === record.key.toLowerCase(),
-		)
-	) {
+	if (openers.some((item) => item.key.toLowerCase() === record.key.toLowerCase())) {
 		throw new Error(`Opener key already exists: ${record.key}`);
 	}
 
@@ -419,20 +367,14 @@ export async function writeConfigPathEnv(
 	try {
 		existing = await fs.readFile(envPath, "utf8");
 	} catch (error) {
-		if (
-			typeof error === "object" &&
-			error &&
-			"code" in error &&
-			error.code === "ENOENT"
-		) {
+		if (typeof error === "object" && error && "code" in error && error.code === "ENOENT") {
 			existing = "";
 		} else {
 			throw error;
 		}
 	}
 
-	const lines =
-		existing === "" ? [] : existing.split(/\r?\n/u).filter(Boolean);
+	const lines = existing === "" ? [] : existing.split(/\r?\n/u).filter(Boolean);
 	const nextLines = lines.filter((line) => !line.startsWith("CONFIG_PATH="));
 	nextLines.push(`CONFIG_PATH=${storagePath}`);
 	await fs.writeFile(envPath, nextLines.join("\n") + "\n", "utf8");
@@ -481,8 +423,7 @@ export async function initializeRuntime(
 		openers: options.openers,
 		defaultOpenerId: options.defaultOpenerId,
 		update: {
-			repositoryUrl:
-				options.repositoryUrl.trim() || DEFAULT_UPDATE_REPOSITORY,
+			repositoryUrl: options.repositoryUrl.trim() || DEFAULT_UPDATE_REPOSITORY,
 			branch: options.branch.trim() || "main",
 			check: updateCheckSchema.parse({
 				lastCheckedAt: "",
@@ -539,38 +480,26 @@ export function detectRepositoryInfo(rootDir = getProjectRoot()): {
 	branch: string;
 	revision: string;
 } {
-	const repositoryUrlResult = spawnSync(
-		"git",
-		["config", "--get", "remote.origin.url"],
-		{
-			cwd: rootDir,
-			encoding: "utf8",
-		},
-	);
-	const branchResult = spawnSync(
-		"git",
-		["rev-parse", "--abbrev-ref", "HEAD"],
-		{
-			cwd: rootDir,
-			encoding: "utf8",
-		},
-	);
+	const repositoryUrlResult = spawnSync("git", ["config", "--get", "remote.origin.url"], {
+		cwd: rootDir,
+		encoding: "utf8",
+	});
+	const branchResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+		cwd: rootDir,
+		encoding: "utf8",
+	});
 	const revisionResult = spawnSync("git", ["rev-parse", "HEAD"], {
 		cwd: rootDir,
 		encoding: "utf8",
 	});
 
 	return {
-		repositoryUrl:
-			repositoryUrlResult.status === 0
-				? repositoryUrlResult.stdout.trim()
-				: "",
+		repositoryUrl: repositoryUrlResult.status === 0 ? repositoryUrlResult.stdout.trim() : "",
 		branch:
 			branchResult.status === 0 && branchResult.stdout.trim() !== "HEAD"
 				? branchResult.stdout.trim()
 				: "main",
-		revision:
-			revisionResult.status === 0 ? revisionResult.stdout.trim() : "",
+		revision: revisionResult.status === 0 ? revisionResult.stdout.trim() : "",
 	};
 }
 

@@ -1,5 +1,6 @@
 {
 	"$schema": "https://turborepo.dev/schema.json",
+	"globalEnv": ["CONFIG_PATH"],
 	"tasks": {
 		"bundle": {
 			"outputs": ["dist/**"]

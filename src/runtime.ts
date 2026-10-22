@@ -6,15 +6,15 @@ import path from "node:path";
 import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import {
 	type AppConfig,
-	DEFAULT_UPDATE_REPOSITORY,
-	type LocationRecord,
-	type OpenerConfig,
-	type UpdateCheckState,
 	absolutePathSchema,
+	DEFAULT_UPDATE_REPOSITORY,
 	getPlatformLabel,
 	getPlatformOpenerPresets,
+	type LocationRecord,
 	locationSchema,
+	type OpenerConfig,
 	refSchema,
+	type UpdateCheckState,
 } from "./domain";
 import {
 	assertLocationPathExists,
@@ -22,11 +22,11 @@ import {
 	createLocationRecord,
 	createOpenerRecord,
 	detectRepositoryInfo,
-	getProjectRoot,
 	getDefaultStorageDir,
-	loadState,
-	type LoadedState,
+	getProjectRoot,
 	initializeRuntime,
+	type LoadedState,
+	loadState,
 	moveStorageDirectory,
 	normalizeUserPath,
 	saveState,
@@ -55,17 +55,13 @@ function formatOpenerChoice(opener: OpenerConfig): string {
 	return `${opener.label} (${opener.key})`;
 }
 
-function applyCommandTemplate(
-	template: string,
-	location: LocationRecord,
-): string {
+function applyCommandTemplate(template: string, location: LocationRecord): string {
 	return template
 		.replaceAll("{path}", quoteForShell(location.path))
 		.replaceAll("{ref}", quoteForShell(location.ref));
 }
 
-const GITHUB_REPOSITORY_SHORTHAND_PATTERN =
-	/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const GITHUB_REPOSITORY_SHORTHAND_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 24;
 
 function resolveRepositoryCloneSource(repositoryUrl: string): string {
@@ -111,10 +107,7 @@ function parseGitHubRepository(repositoryUrl: string): {
 	return null;
 }
 
-function compareVersions(
-	currentVersion: string,
-	nextVersion: string,
-): number | null {
+function compareVersions(currentVersion: string, nextVersion: string): number | null {
 	const parse = (value: string) => {
 		const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u);
 		if (!match) {
@@ -140,23 +133,16 @@ function compareVersions(
 	return 0;
 }
 
-function readRemoteBranchRevision(
-	repositoryUrl: string,
-	branch: string,
-): string {
+function readRemoteBranchRevision(repositoryUrl: string, branch: string): string {
 	const cloneSource = resolveRepositoryCloneSource(repositoryUrl);
 	if (!cloneSource) {
 		return "";
 	}
 
-	const result = spawnSync(
-		"git",
-		["ls-remote", cloneSource, `refs/heads/${branch}`],
-		{
-			encoding: "utf8",
-			timeout: 4000,
-		},
-	);
+	const result = spawnSync("git", ["ls-remote", cloneSource, `refs/heads/${branch}`], {
+		encoding: "utf8",
+		timeout: 4000,
+	});
 	if (result.status !== 0) {
 		return "";
 	}
@@ -176,10 +162,7 @@ async function printVersion(rootDir = getProjectRoot()): Promise<void> {
 	console.log(version || "unknown");
 }
 
-async function readRemotePackageVersion(
-	repositoryUrl: string,
-	branch: string,
-): Promise<string> {
+async function readRemotePackageVersion(repositoryUrl: string, branch: string): Promise<string> {
 	const githubRepository = parseGitHubRepository(repositoryUrl);
 	if (!githubRepository) {
 		return "";
@@ -218,10 +201,7 @@ function shouldRefreshUpdateCheck(lastCheckedAt: string): boolean {
 	return Date.now() - lastCheckedAtMs >= UPDATE_CHECK_INTERVAL_MS;
 }
 
-function formatUpdateNotification(
-	currentVersion: string,
-	check: UpdateCheckState,
-): string | null {
+function formatUpdateNotification(currentVersion: string, check: UpdateCheckState): string | null {
 	const versionComparison =
 		currentVersion && check.latestVersion
 			? compareVersions(currentVersion, check.latestVersion)
@@ -241,13 +221,10 @@ function formatUpdateNotification(
 	return null;
 }
 
-async function maybeNotifyIfUpdateAvailable(
-	state: LoadedState,
-): Promise<LoadedState> {
+async function maybeNotifyIfUpdateAvailable(state: LoadedState): Promise<LoadedState> {
 	const currentVersion = await readCurrentPackageVersion(state.rootDir);
 	const installedRevision =
-		state.config.update.check.installedRevision ||
-		detectRepositoryInfo(state.rootDir).revision;
+		state.config.update.check.installedRevision || detectRepositoryInfo(state.rootDir).revision;
 	let nextState = state;
 
 	if (shouldRefreshUpdateCheck(state.config.update.check.lastCheckedAt)) {
@@ -268,12 +245,9 @@ async function maybeNotifyIfUpdateAvailable(
 		};
 
 		if (
-			nextCheck.lastCheckedAt !==
-				state.config.update.check.lastCheckedAt ||
-			nextCheck.latestVersion !==
-				state.config.update.check.latestVersion ||
-			nextCheck.latestRevision !==
-				state.config.update.check.latestRevision
+			nextCheck.lastCheckedAt !== state.config.update.check.lastCheckedAt ||
+			nextCheck.latestVersion !== state.config.update.check.latestVersion ||
+			nextCheck.latestRevision !== state.config.update.check.latestRevision
 		) {
 			nextState = await saveState({
 				...state,
@@ -286,9 +260,7 @@ async function maybeNotifyIfUpdateAvailable(
 				},
 			});
 		}
-	} else if (
-		installedRevision !== state.config.update.check.installedRevision
-	) {
+	} else if (installedRevision !== state.config.update.check.installedRevision) {
 		nextState = await saveState({
 			...state,
 			config: {
@@ -304,10 +276,7 @@ async function maybeNotifyIfUpdateAvailable(
 		});
 	}
 
-	const notification = formatUpdateNotification(
-		currentVersion,
-		nextState.config.update.check,
-	);
+	const notification = formatUpdateNotification(currentVersion, nextState.config.update.check);
 	if (notification) {
 		warn(notification);
 	}
@@ -318,18 +287,12 @@ async function maybeNotifyIfUpdateAvailable(
 function printConfigState(state: LoadedState): void {
 	console.log(renderBanner());
 	console.log(renderConfigSummary(state.config));
-	console.log(
-		renderOpenerList(state.config.openers, state.config.defaultOpenerId),
-	);
+	console.log(renderOpenerList(state.config.openers, state.config.defaultOpenerId));
 }
 
 function parseStorageIndent(value: string): number {
 	const storageIndent = Number.parseInt(value, 10);
-	if (
-		!Number.isInteger(storageIndent) ||
-		storageIndent < 2 ||
-		storageIndent > 8
-	) {
+	if (!Number.isInteger(storageIndent) || storageIndent < 2 || storageIndent > 8) {
 		throw new Error("Indent must be a whole number between 2 and 8");
 	}
 	return storageIndent;
@@ -371,11 +334,7 @@ async function runProcess(
 				resolve();
 				return;
 			}
-			reject(
-				new Error(
-					`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`,
-				),
-			);
+			reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`));
 		});
 	});
 }
@@ -394,19 +353,12 @@ async function runShellCommand(command: string, cwd?: string): Promise<void> {
 				resolve();
 				return;
 			}
-			reject(
-				new Error(
-					`Command failed with exit code ${code ?? "unknown"}: ${command}`,
-				),
-			);
+			reject(new Error(`Command failed with exit code ${code ?? "unknown"}: ${command}`));
 		});
 	});
 }
 
-function findLocation(
-	target: string,
-	locations: LocationRecord[],
-): LocationRecord | undefined {
+function findLocation(target: string, locations: LocationRecord[]): LocationRecord | undefined {
 	if (/^\d+$/u.test(target)) {
 		const locationId = Number.parseInt(target, 10);
 		return locations.find((location) => location.id === locationId);
@@ -416,25 +368,18 @@ function findLocation(
 	return locations.find((location) => location.ref.toLowerCase() === lowered);
 }
 
-function findOpener(
-	target: string,
-	config: AppConfig,
-): OpenerConfig | undefined {
+function findOpener(target: string, config: AppConfig): OpenerConfig | undefined {
 	if (/^\d+$/u.test(target)) {
 		const openerId = Number.parseInt(target, 10);
 		return config.openers.find((opener) => opener.id === openerId);
 	}
 
 	const lowered = target.toLowerCase();
-	return config.openers.find(
-		(opener) => opener.key.toLowerCase() === lowered,
-	);
+	return config.openers.find((opener) => opener.key.toLowerCase() === lowered);
 }
 
 function getDefaultOpener(config: AppConfig): OpenerConfig {
-	const opener = config.openers.find(
-		(item) => item.id === config.defaultOpenerId,
-	);
+	const opener = config.openers.find((item) => item.id === config.defaultOpenerId);
 	if (!opener) {
 		throw new Error("Default opener is not configured.");
 	}
@@ -486,9 +431,7 @@ async function promptForLocation(
 					location.ref.toLowerCase() === parsed.data.toLowerCase() &&
 					location.ref.toLowerCase() !== defaults?.ref?.toLowerCase(),
 			);
-			return duplicate
-				? `Reference already exists: ${parsed.data}`
-				: true;
+			return duplicate ? `Reference already exists: ${parsed.data}` : true;
 		},
 	});
 
@@ -520,13 +463,10 @@ async function promptForLocation(
 	};
 }
 
-async function promptForCustomOpener(
-	openers: OpenerConfig[],
-): Promise<OpenerConfig> {
+async function promptForCustomOpener(openers: OpenerConfig[]): Promise<OpenerConfig> {
 	const label = await input({
 		message: "Custom opener label",
-		validate: (value) =>
-			value.trim().length >= 2 || "Label must be at least 2 characters",
+		validate: (value) => value.trim().length >= 2 || "Label must be at least 2 characters",
 	});
 	const suggestedKey = slugifyKey(label);
 	const key = await input({
@@ -544,8 +484,7 @@ async function promptForCustomOpener(
 	});
 	const command = await input({
 		message: "Command template",
-		validate: (value) =>
-			value.includes("{path}") || "Command template must include {path}",
+		validate: (value) => value.includes("{path}") || "Command template must include {path}",
 	});
 	const description = await input({
 		message: "Optional description",
@@ -578,8 +517,7 @@ async function promptForOpeners(
 				name: `${preset.label}  ${preset.description}`,
 				value: preset.key,
 				checked: existingOpeners.some(
-					(opener) =>
-						opener.key.toLowerCase() === preset.key.toLowerCase(),
+					(opener) => opener.key.toLowerCase() === preset.key.toLowerCase(),
 				),
 			})),
 			{
@@ -648,9 +586,7 @@ async function promptForOpeners(
 		})),
 		default:
 			currentDefaultOpenerId &&
-			selectedOpeners.some(
-				(opener) => opener.id === currentDefaultOpenerId,
-			)
+			selectedOpeners.some((opener) => opener.id === currentDefaultOpenerId)
 				? currentDefaultOpenerId
 				: selectedOpeners[0].id,
 	});
@@ -667,9 +603,7 @@ async function openLocation(
 	openerTarget?: string | null,
 ): Promise<void> {
 	assertLocationPathExists(location.path);
-	const opener = openerTarget
-		? findOpener(openerTarget, config)
-		: getDefaultOpener(config);
+	const opener = openerTarget ? findOpener(openerTarget, config) : getDefaultOpener(config);
 	if (!opener) {
 		throw new Error(`Opener not found: ${openerTarget}`);
 	}
@@ -679,10 +613,7 @@ async function openLocation(
 	await runShellCommand(command, location.path);
 }
 
-async function pickLocation(
-	locations: LocationRecord[],
-	message: string,
-): Promise<LocationRecord> {
+async function pickLocation(locations: LocationRecord[], message: string): Promise<LocationRecord> {
 	if (locations.length === 0) {
 		throw new Error("No saved folders yet. Use `o add` first.");
 	}
@@ -703,10 +634,7 @@ async function pickLocation(
 	return location;
 }
 
-async function pickOpener(
-	config: AppConfig,
-	message: string,
-): Promise<OpenerConfig> {
+async function pickOpener(config: AppConfig, message: string): Promise<OpenerConfig> {
 	const openerId = await select<number>({
 		message,
 		choices: config.openers.map((opener) => ({
@@ -724,10 +652,7 @@ async function pickOpener(
 	return opener;
 }
 
-async function addLocationFlow(
-	state: LoadedState,
-	args: string[] = [],
-): Promise<LoadedState> {
+async function addLocationFlow(state: LoadedState, args: string[] = []): Promise<LoadedState> {
 	const existing = state.locations;
 	let draft: Omit<LocationRecord, "id">;
 
@@ -759,16 +684,10 @@ async function addLocationFlow(
 	};
 }
 
-async function removeLocationFlow(
-	state: LoadedState,
-	target?: string,
-): Promise<LoadedState> {
+async function removeLocationFlow(state: LoadedState, target?: string): Promise<LoadedState> {
 	const location = target
 		? findLocation(target, state.locations)
-		: await pickLocation(
-				state.locations,
-				"Choose the saved folder to remove",
-			);
+		: await pickLocation(state.locations, "Choose the saved folder to remove");
 
 	if (!location) {
 		throw new Error(`Saved folder not found: ${target}`);
@@ -802,10 +721,7 @@ async function renameLocationFlow(
 ): Promise<LoadedState> {
 	const location = target
 		? findLocation(target, state.locations)
-		: await pickLocation(
-				state.locations,
-				"Choose the saved folder to rename",
-			);
+		: await pickLocation(state.locations, "Choose the saved folder to rename");
 
 	if (!location) {
 		throw new Error(`Saved folder not found: ${target}`);
@@ -819,28 +735,20 @@ async function renameLocationFlow(
 				validate: (value) => {
 					const parsed = refSchema.safeParse(value);
 					if (!parsed.success) {
-						return (
-							parsed.error.issues[0]?.message ??
-							"Invalid reference"
-						);
+						return parsed.error.issues[0]?.message ?? "Invalid reference";
 					}
 					const duplicate = state.locations.some(
 						(item) =>
 							item.id !== location.id &&
-							item.ref.toLowerCase() ===
-								parsed.data.toLowerCase(),
+							item.ref.toLowerCase() === parsed.data.toLowerCase(),
 					);
-					return duplicate
-						? `Reference already exists: ${parsed.data}`
-						: true;
+					return duplicate ? `Reference already exists: ${parsed.data}` : true;
 				},
 			});
 
 	assertRefAvailable(nextRef, state.locations, location.id);
 	const locations = state.locations.map((item) =>
-		item.id === location.id
-			? locationSchema.parse({ ...item, ref: nextRef })
-			: item,
+		item.id === location.id ? locationSchema.parse({ ...item, ref: nextRef }) : item,
 	);
 	await saveState({
 		...state,
@@ -912,8 +820,7 @@ async function runDoctorFlow(state: LoadedState): Promise<LoadedState> {
 	if (process.env.CONFIG_PATH?.trim() !== state.config.storagePath) {
 		issues.push("CONFIG_PATH does not match the active storage file.");
 		const fixEnv = await confirm({
-			message:
-				"Update .env so CONFIG_PATH matches the current storage file?",
+			message: "Update .env so CONFIG_PATH matches the current storage file?",
 			default: true,
 		});
 		if (fixEnv) {
@@ -927,13 +834,9 @@ async function runDoctorFlow(state: LoadedState): Promise<LoadedState> {
 		issues.push(`Storage directory is missing: ${state.config.storageDir}`);
 	}
 
-	const missingLocations = state.locations.filter(
-		(location) => !existsSync(location.path),
-	);
+	const missingLocations = state.locations.filter((location) => !existsSync(location.path));
 	if (missingLocations.length > 0) {
-		issues.push(
-			`${missingLocations.length} saved folders no longer exist.`,
-		);
+		issues.push(`${missingLocations.length} saved folders no longer exist.`);
 		const deleteIds = await checkbox<number>({
 			message: "Select missing folders to delete from storage",
 			choices: missingLocations.map((location) => ({
@@ -958,33 +861,26 @@ async function runDoctorFlow(state: LoadedState): Promise<LoadedState> {
 		}
 	}
 
-	const brokenOpeners = state.config.openers.filter(
-		(opener) => !commandExists(opener.command),
-	);
+	const brokenOpeners = state.config.openers.filter((opener) => !commandExists(opener.command));
 	if (brokenOpeners.length > 0) {
-		issues.push(
-			`${brokenOpeners.length} opener commands are not currently available.`,
-		);
+		issues.push(`${brokenOpeners.length} opener commands are not currently available.`);
 		warn("Unavailable openers:");
-		console.log(
-			renderOpenerList(brokenOpeners, state.config.defaultOpenerId),
-		);
+		console.log(renderOpenerList(brokenOpeners, state.config.defaultOpenerId));
 	}
 
 	if (issues.length === 0) {
 		success("Doctor found no issues.");
 	} else {
 		warn("Doctor summary:");
-		issues.forEach((issue) => console.log(`  - ${issue}`));
+		issues.forEach((issue) => {
+			console.log(`  - ${issue}`);
+		});
 	}
 
 	return state;
 }
 
-async function saveDefaultOpener(
-	state: LoadedState,
-	opener: OpenerConfig,
-): Promise<LoadedState> {
+async function saveDefaultOpener(state: LoadedState, opener: OpenerConfig): Promise<LoadedState> {
 	return saveState({
 		...state,
 		config: {
@@ -994,10 +890,7 @@ async function saveDefaultOpener(
 	});
 }
 
-async function saveStorageIndent(
-	state: LoadedState,
-	storageIndent: number,
-): Promise<LoadedState> {
+async function saveStorageIndent(state: LoadedState, storageIndent: number): Promise<LoadedState> {
 	return saveState({
 		...state,
 		config: {
@@ -1025,10 +918,7 @@ async function saveUpdateSource(
 	});
 }
 
-async function handleConfigCommand(
-	state: LoadedState,
-	args: string[],
-): Promise<LoadedState> {
+async function handleConfigCommand(state: LoadedState, args: string[]): Promise<LoadedState> {
 	const [subcommand, ...rest] = args;
 
 	if (!subcommand) {
@@ -1056,9 +946,7 @@ async function handleConfigCommand(
 	if (field === "default-opener" || field === "default") {
 		const target = values[0];
 		if (!target) {
-			throw new Error(
-				"Usage: o config set default-opener <opener-id|opener-key>",
-			);
+			throw new Error("Usage: o config set default-opener <opener-id|opener-key>");
 		}
 		const opener = findOpener(target, state.config);
 		if (!opener) {
@@ -1110,15 +998,9 @@ async function handleConfigCommand(
 	if (field === "update-repo" || field === "repository") {
 		const repositoryUrl = values[0]?.trim();
 		if (!repositoryUrl) {
-			throw new Error(
-				"Usage: o config set update-repo <repository-url|owner/repo>",
-			);
+			throw new Error("Usage: o config set update-repo <repository-url|owner/repo>");
 		}
-		const nextState = await saveUpdateSource(
-			state,
-			repositoryUrl,
-			state.config.update.branch,
-		);
+		const nextState = await saveUpdateSource(state, repositoryUrl, state.config.update.branch);
 		success("Update repository saved.");
 		return nextState;
 	}
@@ -1128,11 +1010,7 @@ async function handleConfigCommand(
 		if (!branch) {
 			throw new Error("Usage: o config set update-branch <branch>");
 		}
-		const nextState = await saveUpdateSource(
-			state,
-			state.config.update.repositoryUrl,
-			branch,
-		);
+		const nextState = await saveUpdateSource(state, state.config.update.repositoryUrl, branch);
 		success("Update branch saved.");
 		return nextState;
 	}
@@ -1179,10 +1057,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 		}
 
 		if (action === "default") {
-			const opener = await pickOpener(
-				current.config,
-				"Choose the default opener",
-			);
+			const opener = await pickOpener(current.config, "Choose the default opener");
 			current = await saveDefaultOpener(current, opener);
 			success(`Default opener set to ${opener.label}`);
 			continue;
@@ -1210,10 +1085,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				warn("At least one opener must remain.");
 				continue;
 			}
-			const opener = await pickOpener(
-				current.config,
-				"Choose the opener to remove",
-			);
+			const opener = await pickOpener(current.config, "Choose the opener to remove");
 			const approved = await confirm({
 				message: `Remove ${opener.label}?`,
 				default: false,
@@ -1222,9 +1094,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				continue;
 			}
 
-			const openers = current.config.openers.filter(
-				(item) => item.id !== opener.id,
-			);
+			const openers = current.config.openers.filter((item) => item.id !== opener.id);
 			const defaultOpenerId =
 				current.config.defaultOpenerId === opener.id
 					? openers[0].id
@@ -1255,10 +1125,7 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 				message: "New storage directory",
 				default: current.config.storageDir,
 			});
-			current = await moveStorageDirectory(
-				current,
-				normalizeUserPath(nextDirInput),
-			);
+			current = await moveStorageDirectory(current, normalizeUserPath(nextDirInput));
 			success(`Storage moved to ${current.config.storageDir}`);
 			continue;
 		}
@@ -1277,17 +1144,13 @@ async function configMenuFlow(state: LoadedState): Promise<LoadedState> {
 
 		if (action === "update-source") {
 			const repositoryUrl = await input({
-				message:
-					"Repository URL or GitHub owner/repo used by `o update`",
-				default:
-					current.config.update.repositoryUrl ||
-					DEFAULT_UPDATE_REPOSITORY,
+				message: "Repository URL or GitHub owner/repo used by `o update`",
+				default: current.config.update.repositoryUrl || DEFAULT_UPDATE_REPOSITORY,
 			});
 			const branch = await input({
 				message: "Branch",
 				default: current.config.update.branch,
-				validate: (value) =>
-					value.trim().length > 0 || "Branch is required",
+				validate: (value) => value.trim().length > 0 || "Branch is required",
 			});
 			current = await saveUpdateSource(current, repositoryUrl, branch);
 			success("Update source saved.");
@@ -1299,8 +1162,7 @@ async function setupFlow(force = false): Promise<LoadedState> {
 	const existing = await loadState({ allowFallbackToCwd: true });
 	if (existing && !force) {
 		const approved = await confirm({
-			message:
-				"Setup already exists. Run setup again and replace the current config?",
+			message: "Setup already exists. Run setup again and replace the current config?",
 			default: false,
 		});
 		if (!approved) {
@@ -1309,9 +1171,7 @@ async function setupFlow(force = false): Promise<LoadedState> {
 	}
 
 	console.log(renderBanner());
-	info(
-		"Setup will create storage.json and .env so open-cli is ready to use.",
-	);
+	info("Setup will create storage.json and .env so open-cli is ready to use.");
 
 	const storageDirInput = await input({
 		message: "Directory that should contain storage.json",
@@ -1325,9 +1185,7 @@ async function setupFlow(force = false): Promise<LoadedState> {
 		default: true,
 	});
 
-	const initialLocation = addFirstLocation
-		? await promptForLocation([])
-		: undefined;
+	const initialLocation = addFirstLocation ? await promptForLocation([]) : undefined;
 	const detectedRepository = detectRepositoryInfo(getProjectRoot());
 	const repositoryUrl = await input({
 		message: "Repository URL or GitHub owner/repo for `o update`",
@@ -1358,9 +1216,7 @@ async function setupFlow(force = false): Promise<LoadedState> {
 
 async function interactivePicker(): Promise<void> {
 	const loadedState = await loadState({ allowFallbackToCwd: true });
-	const state = loadedState
-		? await maybeNotifyIfUpdateAvailable(loadedState)
-		: null;
+	const state = loadedState ? await maybeNotifyIfUpdateAvailable(loadedState) : null;
 	if (!state) {
 		await setupFlow();
 		return;
@@ -1429,9 +1285,7 @@ async function updateFlow(state: LoadedState): Promise<LoadedState> {
 
 	const branch = state.config.update.branch.trim() || "main";
 	const cloneSource = resolveRepositoryCloneSource(repositoryUrl);
-	const tempRoot = await fs.mkdtemp(
-		path.join(os.tmpdir(), "open-cli-update-"),
-	);
+	const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "open-cli-update-"));
 	const cloneDir = path.join(tempRoot, "repo");
 	const rootDir = state.rootDir;
 
@@ -1449,25 +1303,16 @@ async function updateFlow(state: LoadedState): Promise<LoadedState> {
 		const entries = await fs.readdir(cloneDir, { withFileTypes: true });
 		for (const entry of entries) {
 			if (
-				[
-					".git",
-					".env",
-					".env.local",
-					"dist",
-					"node_modules",
-					"storage",
-				].includes(entry.name)
+				[".git", ".env", ".env.local", "dist", "node_modules", "storage"].includes(
+					entry.name,
+				)
 			) {
 				continue;
 			}
-			await fs.cp(
-				path.join(cloneDir, entry.name),
-				path.join(rootDir, entry.name),
-				{
-					recursive: true,
-					force: true,
-				},
-			);
+			await fs.cp(path.join(cloneDir, entry.name), path.join(rootDir, entry.name), {
+				recursive: true,
+				force: true,
+			});
 		}
 
 		await runProcess("pnpm", ["install"], { cwd: rootDir });
@@ -1581,10 +1426,7 @@ export async function runCli(args: string[]): Promise<void> {
 		const state = await requireState();
 		const location = parsed.args[0]
 			? findLocation(parsed.args[0], state.locations)
-			: await pickLocation(
-					state.locations,
-					"Choose the saved folder to open",
-				);
+			: await pickLocation(state.locations, "Choose the saved folder to open");
 		if (!location) {
 			throw new Error(`Saved folder not found: ${parsed.args[0]}`);
 		}

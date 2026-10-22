@@ -15,7 +15,6 @@ To make a cross-platform folder opener to help developers open their active proj
 The setup should make everything ready to use.
 
 Required steps:
-
 - Enter the directory that includes the config and storage files. default is `<cwd>/storage`.
 - Enter the folder openers. Choose which way to tell the user as you see fit about how to input the data. Ensure after this step that the user has atleast one opener ready to go.
 - Enter the first reference and path. this should be optional but recommended

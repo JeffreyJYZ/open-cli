@@ -49,7 +49,6 @@ o setup
 ```
 
 Setup will ask for:
-
 1. The directory that should contain `storage.json`.
 2. The openers you want enabled.
 3. The default opener.
@@ -113,7 +112,6 @@ o help                   Show help
 ## Config Storage
 
 Runtime state lives in one JSON file:
-
 - `storage.json`: saved folder references, opener definitions, update source, update-check metadata, formatting options, and file location metadata
 
 The schemas are defined with strict Zod objects in [src/types.ts](src/types.ts).
@@ -121,7 +119,6 @@ The schemas are defined with strict Zod objects in [src/types.ts](src/types.ts).
 ## Config Command
 
 `o config` still opens the interactive config menu where you can:
-
 - change the default opener
 - add custom openers
 - remove openers
@@ -147,7 +144,6 @@ When a newer version or repository revision is detected, `open-cli` prints a rem
 ## Doctor
 
 `o doctor` checks:
-
 - whether `CONFIG_PATH` points at the active config
 - whether the storage directory exists
 - whether saved folders still exist
@@ -158,7 +154,6 @@ If saved folders are missing on disk, the doctor can remove them from storage in
 ## Update Flow
 
 `o update` is designed to keep your saved config and folders while refreshing the CLI code:
-
 1. Clone the configured repository and branch into a temporary directory.
 2. Copy the new repo contents into the current installation.
 3. Preserve `storage`, `.env`, and `.env.local`.

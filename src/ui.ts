@@ -44,17 +44,9 @@ export function formatTable(headers: string[], rows: string[][]): string {
 
 	const border = `+${widths.map((width) => "-".repeat(width + 2)).join("+")}+`;
 	const rowLine = (row: string[]) =>
-		`| ${row
-			.map((cell, columnIndex) => cell.padEnd(widths[columnIndex]))
-			.join(" | ")} |`;
+		`| ${row.map((cell, columnIndex) => cell.padEnd(widths[columnIndex])).join(" | ")} |`;
 
-	return [
-		border,
-		rowLine(headers),
-		border,
-		...rows.map(rowLine),
-		border,
-	].join("\n");
+	return [border, rowLine(headers), border, ...rows.map(rowLine), border].join("\n");
 }
 
 export function printLocations(locations: LocationRecord[]): void {
@@ -115,10 +107,7 @@ export function renderConfigSummary(config: AppConfig): string {
 	].join("\n");
 }
 
-export function renderOpenerList(
-	openers: OpenerConfig[],
-	defaultOpenerId: number,
-): string {
+export function renderOpenerList(openers: OpenerConfig[], defaultOpenerId: number): string {
 	if (openers.length === 0) {
 		return "No openers configured.";
 	}
@@ -126,9 +115,7 @@ export function renderOpenerList(
 	return openers
 		.map((opener) => {
 			const marker =
-				opener.id === defaultOpenerId
-					? chalk.green("default")
-					: chalk.dim("optional");
+				opener.id === defaultOpenerId ? chalk.green("default") : chalk.dim("optional");
 			return `  ${opener.label} (${opener.key})  ${marker}\n    ${chalk.dim(opener.command)}`;
 		})
 		.join("\n");
